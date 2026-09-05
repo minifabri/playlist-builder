@@ -15,6 +15,7 @@ import { scaleCurveToDuration, applyPhasesToDuration, normalizePhases } from "@/
 import { validateCurve } from "@/domain/energy/validateCurve";
 import type { DraftTrack } from "@/domain/playlist/types";
 import { generateMockDraft } from "@/domain/playlist/generateMockDraft";
+import { ALL_YOGA_GENRES } from "@/domain/playlist/moodSuggestions";
 import type { ArtistSummary } from "@/integrations/spotify/types";
 
 const AUTOSAVE_DELAY_MS = 700;
@@ -47,6 +48,8 @@ export default function SessionEditorPage({
   const [isPublicExport, setIsPublicExport] = useState(false);
   const [exportState, setExportState] = useState<ExportState>({ status: "idle" });
   const [searchSeed, setSearchSeed] = useState<SearchSeed | null>(null);
+  const [preferredGenres, setPreferredGenres] = useState<string[]>([]);
+  const [excludedGenres, setExcludedGenres] = useState<string[]>([]);
 
   useEffect(() => {
     const found = localClassSessionRepository.get(id);
@@ -61,8 +64,53 @@ export default function SessionEditorPage({
       } catch {
         // ignore
       }
+      try {
+        const rawGenres = window.localStorage.getItem(`ima-yoga-genre-prefs-${id}`);
+        if (rawGenres) {
+          const parsed = JSON.parse(rawGenres) as {
+            preferredGenres?: string[];
+            excludedGenres?: string[];
+          };
+          setPreferredGenres(parsed.preferredGenres ?? []);
+          setExcludedGenres(parsed.excludedGenres ?? []);
+        }
+      } catch {
+        // ignore
+      }
     }
   }, [id]);
+
+  function saveGenrePrefs(nextPreferred: string[], nextExcluded: string[]) {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        `ima-yoga-genre-prefs-${id}`,
+        JSON.stringify({ preferredGenres: nextPreferred, excludedGenres: nextExcluded }),
+      );
+    } catch {
+      // ignore
+    }
+  }
+
+  function togglePreferredGenre(genre: string) {
+    const nextPreferred = preferredGenres.includes(genre)
+      ? preferredGenres.filter((g) => g !== genre)
+      : [...preferredGenres, genre];
+    const nextExcluded = excludedGenres.filter((g) => g !== genre);
+    setPreferredGenres(nextPreferred);
+    setExcludedGenres(nextExcluded);
+    saveGenrePrefs(nextPreferred, nextExcluded);
+  }
+
+  function toggleExcludedGenre(genre: string) {
+    const nextExcluded = excludedGenres.includes(genre)
+      ? excludedGenres.filter((g) => g !== genre)
+      : [...excludedGenres, genre];
+    const nextPreferred = preferredGenres.filter((g) => g !== genre);
+    setExcludedGenres(nextExcluded);
+    setPreferredGenres(nextPreferred);
+    saveGenrePrefs(nextPreferred, nextExcluded);
+  }
 
   // Reflect the ?spotify=connected|error redirect from the OAuth callback,
   // then strip it from the URL so a refresh doesn't re-show the banner.
@@ -125,10 +173,12 @@ export default function SessionEditorPage({
     setTopArtists([]);
   }
 
-  // Top genres are derived client-side from the top artists' own genre
-  // tags — Spotify has no separate "top genres" endpoint, and genres are
-  // already part of the artist objects we fetch.
-  const topGenres = useMemo(() => {
+  // The teacher's real Spotify top genres, derived client-side from the
+  // top artists' own genre tags (Spotify has no separate "top genres"
+  // endpoint). These are what her Spotify account happens to stream —
+  // often not yoga-appropriate on their own — so they're offered as an
+  // "exclude" list (below), not fed directly into "Suggested for you".
+  const realTopGenres = useMemo(() => {
     const counts = new Map<string, number>();
     for (const artist of topArtists) {
       for (const genre of artist.genres) {
@@ -143,10 +193,6 @@ export default function SessionEditorPage({
 
   function seedSearchFromArtist(name: string) {
     setSearchSeed((prev) => ({ query: `artist:"${name}"`, nonce: (prev?.nonce ?? 0) + 1 }));
-  }
-
-  function seedSearchFromGenre(genre: string) {
-    setSearchSeed((prev) => ({ query: `genre:"${genre}"`, nonce: (prev?.nonce ?? 0) + 1 }));
   }
 
   const scheduleSave = useCallback(
@@ -433,7 +479,8 @@ export default function SessionEditorPage({
               curve={session.curve}
               connected={spotifyConnected}
               seed={searchSeed}
-              topGenres={topGenres}
+              preferredGenres={preferredGenres}
+              excludedGenres={excludedGenres}
               onChange={updateOrder}
             />
 
@@ -478,22 +525,58 @@ export default function SessionEditorPage({
                     </div>
                   </div>
                 )}
-                {topGenres.length > 0 && (
-                  <div className="mt-3">
-                    <div className="text-[11px] text-text-muted">
-                      Your top genres — tap one to search its tracks
-                    </div>
-                    <div className="mt-1.5 flex flex-wrap gap-1.5">
-                      {topGenres.map((genre) => (
+                <div className="mt-3">
+                  <div className="text-[11px] text-text-muted">
+                    Genres to suggest from — pick as many as you like (yoga-appropriate
+                    genres and subgenres; leave empty to use our default mix for each
+                    mood)
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {ALL_YOGA_GENRES.map((genre) => {
+                      const selected = preferredGenres.includes(genre);
+                      return (
                         <button
                           key={genre}
                           type="button"
-                          onClick={() => seedSearchFromGenre(genre)}
-                          className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-text hover:bg-primary hover:text-white"
+                          onClick={() => togglePreferredGenre(genre)}
+                          aria-pressed={selected}
+                          className={`rounded-full px-2 py-1 text-[11px] ${
+                            selected
+                              ? "bg-primary text-white"
+                              : "bg-surface-subtle text-text hover:bg-primary hover:text-white"
+                          }`}
                         >
                           {genre}
                         </button>
-                      ))}
+                      );
+                    })}
+                  </div>
+                </div>
+                {realTopGenres.length > 0 && (
+                  <div className="mt-3">
+                    <div className="text-[11px] text-text-muted">
+                      Never suggest — from your real Spotify top genres, in case any
+                      don&apos;t belong in a yoga class
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {realTopGenres.map((genre) => {
+                        const selected = excludedGenres.includes(genre);
+                        return (
+                          <button
+                            key={genre}
+                            type="button"
+                            onClick={() => toggleExcludedGenre(genre)}
+                            aria-pressed={selected}
+                            className={`rounded-full px-2 py-1 text-[11px] ${
+                              selected
+                                ? "bg-danger text-white"
+                                : "bg-surface-subtle text-text hover:bg-danger hover:text-white"
+                            }`}
+                          >
+                            {genre}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 )}

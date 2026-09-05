@@ -21,9 +21,13 @@ type Props = {
   order: DraftTrack[];
   curve: EnergyCurve;
   connected: boolean;
-  /** The listener's Spotify top genres, if connected — used to personalize
-   * the "Suggested for you" pool. */
-  topGenres?: string[];
+  /** Genres the teacher picked from the curated yoga genre list (the
+   * multi-select badges in the Spotify panel) — narrows "Suggested for
+   * you" to just these when non-empty. */
+  preferredGenres?: string[];
+  /** Genres that must never be suggested (e.g. genres from her real
+   * Spotify taste that don't belong in a yoga class). */
+  excludedGenres?: string[];
   /** Set by the parent when a top artist/genre chip is clicked, to run a
    * search here without lifting the whole search UI up. */
   seed?: SearchSeed | null;
@@ -109,7 +113,8 @@ export function TrackRail({
   order,
   curve,
   connected,
-  topGenres = [],
+  preferredGenres = [],
+  excludedGenres = [],
   seed,
   onChange,
 }: Props) {
@@ -123,6 +128,7 @@ export function TrackRail({
   const [suggesting, setSuggesting] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [suggestGenre, setSuggestGenre] = useState<string | null>(null);
+  const [suggestPersonalized, setSuggestPersonalized] = useState(false);
   const [suggestRotation, setSuggestRotation] = useState(0);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -147,7 +153,8 @@ export function TrackRail({
   const draftIsFull = curve.durationSec > 0 && nextStartSec >= curve.durationSec;
   const nextTargetEnergy = sampleEnergyAt(curve, Math.min(nextStartSec, curve.durationSec));
   const nextMoodLabel = energyLabel(nextTargetEnergy);
-  const topGenresKey = topGenres.join("|");
+  const preferredGenresKey = preferredGenres.join("|");
+  const excludedGenresKey = excludedGenres.join("|");
 
   function move(index: number, direction: -1 | 1) {
     const target = index + direction;
@@ -294,9 +301,9 @@ export function TrackRail({
   // "Suggested for you": re-fetches from Spotify search whenever the mood
   // at the next open slot changes (nextMoodLabel only takes 5 discrete
   // values, so dragging a curve point doesn't spam Spotify — it re-fetches
-  // only when a mood *band* boundary is crossed), the listener's top
-  // genres load, or "shuffle" is clicked. Debounced defensively on top of
-  // that quantization.
+  // only when a mood *band* boundary is crossed), the teacher's genre
+  // picks/exclusions change, or "shuffle" is clicked. Debounced
+  // defensively on top of that quantization.
   useEffect(() => {
     if (suggestTimer.current) clearTimeout(suggestTimer.current);
     if (!connected || draftIsFull) {
@@ -311,8 +318,13 @@ export function TrackRail({
     suggestTimer.current = setTimeout(async () => {
       setSuggesting(true);
       setSuggestionError(null);
-      const seedPick = pickMoodSuggestionSeed(nextTargetEnergy, topGenres, suggestRotation);
+      const seedPick = pickMoodSuggestionSeed(
+        nextTargetEnergy,
+        { preferredGenres, excludedGenres },
+        suggestRotation,
+      );
       setSuggestGenre(seedPick.genre);
+      setSuggestPersonalized(seedPick.personalized);
       try {
         const res = await fetch(
           `/api/music/search/tracks?q=${encodeURIComponent(`genre:"${seedPick.genre}"`)}`,
@@ -338,7 +350,7 @@ export function TrackRail({
       if (suggestTimer.current) clearTimeout(suggestTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, nextMoodLabel, topGenresKey, suggestRotation, draftIsFull]);
+  }, [connected, nextMoodLabel, preferredGenresKey, excludedGenresKey, suggestRotation, draftIsFull]);
 
   function togglePreview(trackId: string) {
     setPreviewTrackId((current) => (current === trackId ? null : trackId));
@@ -580,8 +592,8 @@ export function TrackRail({
         </div>
         {!connected ? (
           <p className="mt-1 text-xs text-text-muted">
-            Connect Spotify to get track suggestions matched to your taste and to the
-            mood at this point in the class.
+            Connect Spotify to get track suggestions matched to the mood at this point
+            in the class.
           </p>
         ) : draftIsFull ? (
           <p className="mt-1 text-xs text-text-muted">
@@ -591,10 +603,16 @@ export function TrackRail({
         ) : (
           <>
             <p className="mt-1 text-[11px] text-text-muted">
-              Based on your Spotify taste and the energy arc at this point
-              {suggestGenre ? ` — genre: ${suggestGenre}` : ""}. This is a heuristic
-              (Spotify doesn&apos;t expose real audio-mood data for new apps), so tap 🔄
-              if these don&apos;t feel right.
+              These come from a Spotify search for the genre{" "}
+              <strong className="text-text">{suggestGenre ?? "…"}</strong>, picked because
+              it fits &quot;{nextMoodLabel}&quot;
+              {suggestPersonalized
+                ? " and is one of your selected genres"
+                : " from our default yoga-genre list"}
+              . Not based on your personal Spotify listening (Spotify doesn&apos;t expose
+              real audio-mood data to new apps, and your own top genres aren&apos;t
+              necessarily yoga-appropriate) — pick genres below to steer this, or tap 🔄
+              for a different pick within &quot;{nextMoodLabel}&quot;.
             </p>
             {suggesting && <p className="mt-2 text-xs text-text-muted">Loading…</p>}
             {suggestionError && (
