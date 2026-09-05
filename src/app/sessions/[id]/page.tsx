@@ -433,6 +433,7 @@ export default function SessionEditorPage({
               curve={session.curve}
               connected={spotifyConnected}
               seed={searchSeed}
+              topGenres={topGenres}
               onChange={updateOrder}
             />
 

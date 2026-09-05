@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
-import { energyLabel } from "@/domain/energy";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { energyLabel, sampleEnergyAt } from "@/domain/energy";
 import type { EnergyCurve } from "@/domain/energy/types";
 import {
   calculatePlacements,
@@ -9,6 +9,7 @@ import {
   totalDurationMs,
 } from "@/domain/playlist/calculatePlacements";
 import { MOCK_TRACK_POOL } from "@/domain/playlist/mockTracks";
+import { pickMoodSuggestionSeed } from "@/domain/playlist/moodSuggestions";
 import type { DraftTrack } from "@/domain/playlist/types";
 import { Button } from "@/components/ui/Button";
 import type { TrackSummary } from "@/integrations/spotify/types";
@@ -19,11 +20,16 @@ type Props = {
   order: DraftTrack[];
   curve: EnergyCurve;
   connected: boolean;
+  /** The listener's Spotify top genres, if connected — used to personalize
+   * the "Suggested for you" pool. */
+  topGenres?: string[];
   /** Set by the parent when a top artist/genre chip is clicked, to run a
    * search here without lifting the whole search UI up. */
   seed?: SearchSeed | null;
   onChange: (order: DraftTrack[]) => void;
 };
+
+const SUGGESTION_DEBOUNCE_MS = 500;
 
 function formatMs(ms: number): string {
   const totalSec = Math.round(ms / 1000);
@@ -50,12 +56,74 @@ function SpotifyPreviewEmbed({ trackId }: { trackId: string }) {
   );
 }
 
-export function TrackRail({ order, curve, connected, seed, onChange }: Props) {
+function TrackResultRow({
+  track,
+  isPreviewOpen,
+  onTogglePreview,
+  onAdd,
+}: {
+  track: TrackSummary;
+  isPreviewOpen: boolean;
+  onTogglePreview: () => void;
+  onAdd: () => void;
+}) {
+  return (
+    <li className="rounded-[var(--radius-control)] px-2 py-1.5 text-xs hover:bg-surface-subtle">
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate">
+          <span className="font-medium text-text">{track.title}</span>{" "}
+          <span className="text-text-muted">
+            — {track.artist} ({formatMs(track.durationMs)})
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={onTogglePreview}
+            aria-pressed={isPreviewOpen}
+            aria-label={isPreviewOpen ? "Hide preview" : "Preview track"}
+            className={`h-6 w-6 rounded-full hover:bg-surface ${isPreviewOpen ? "text-primary" : "text-text-muted"}`}
+          >
+            {isPreviewOpen ? "◼" : "▶"}
+          </button>
+          <button
+            type="button"
+            onClick={onAdd}
+            className="rounded-full bg-primary px-2 py-1 text-[10px] font-medium text-white hover:opacity-90"
+          >
+            + Add
+          </button>
+        </span>
+      </div>
+      {isPreviewOpen && (
+        <div className="mt-1.5">
+          <SpotifyPreviewEmbed trackId={track.id} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+export function TrackRail({
+  order,
+  curve,
+  connected,
+  topGenres = [],
+  seed,
+  onChange,
+}: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<TrackSummary[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [previewTrackId, setPreviewTrackId] = useState<string | null>(null);
+
+  const [suggestions, setSuggestions] = useState<TrackSummary[]>([]);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
+  const [suggestGenre, setSuggestGenre] = useState<string | null>(null);
+  const [suggestRotation, setSuggestRotation] = useState(0);
+  const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const placements = calculatePlacements(order, curve);
   const totalMs = totalDurationMs(order);
@@ -64,6 +132,14 @@ export function TrackRail({ order, curve, connected, seed, onChange }: Props) {
     (t) => !order.some((o) => o.source === "mock" && o.id === t.id),
   );
   const exportableCount = order.filter((t) => t.source === "spotify").length;
+
+  // Where the next track would land, and what mood the class arc calls
+  // for there — this is what drives "Suggested for you" below.
+  const nextStartSec = totalMs / 1000;
+  const draftIsFull = curve.durationSec > 0 && nextStartSec >= curve.durationSec;
+  const nextTargetEnergy = sampleEnergyAt(curve, Math.min(nextStartSec, curve.durationSec));
+  const nextMoodLabel = energyLabel(nextTargetEnergy);
+  const topGenresKey = topGenres.join("|");
 
   function move(index: number, direction: -1 | 1) {
     const target = index + direction;
@@ -167,6 +243,55 @@ export function TrackRail({ order, curve, connected, seed, onChange }: Props) {
     performSearch(seed.query);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed?.nonce]);
+
+  // "Suggested for you": re-fetches from Spotify search whenever the mood
+  // at the next open slot changes (nextMoodLabel only takes 5 discrete
+  // values, so dragging a curve point doesn't spam Spotify — it re-fetches
+  // only when a mood *band* boundary is crossed), the listener's top
+  // genres load, or "shuffle" is clicked. Debounced defensively on top of
+  // that quantization.
+  useEffect(() => {
+    if (suggestTimer.current) clearTimeout(suggestTimer.current);
+    if (!connected || draftIsFull) {
+      // Clearing suggestions in response to an external-trigger change
+      // (connection dropped / draft became full) — same sanctioned pattern
+      // as the seed-driven search effect above.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSuggestions([]);
+      setSuggestGenre(null);
+      return;
+    }
+    suggestTimer.current = setTimeout(async () => {
+      setSuggesting(true);
+      setSuggestionError(null);
+      const seedPick = pickMoodSuggestionSeed(nextTargetEnergy, topGenres, suggestRotation);
+      setSuggestGenre(seedPick.genre);
+      try {
+        const res = await fetch(
+          `/api/music/search/tracks?q=${encodeURIComponent(`genre:"${seedPick.genre}"`)}`,
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          setSuggestionError(
+            data.code === "RATE_LIMITED" || data.code === "QUOTA_EXCEEDED"
+              ? "Spotify è temporaneamente occupato — riprova tra poco."
+              : "Suggerimenti non disponibili al momento.",
+          );
+          setSuggestions([]);
+        } else {
+          setSuggestions((data.items ?? []).slice(0, 6));
+        }
+      } catch {
+        setSuggestionError("Suggerimenti non disponibili al momento.");
+      } finally {
+        setSuggesting(false);
+      }
+    }, SUGGESTION_DEBOUNCE_MS);
+    return () => {
+      if (suggestTimer.current) clearTimeout(suggestTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, nextMoodLabel, topGenresKey, suggestRotation, draftIsFull]);
 
   function togglePreview(trackId: string) {
     setPreviewTrackId((current) => (current === trackId ? null : trackId));
@@ -307,9 +432,66 @@ export function TrackRail({ order, curve, connected, seed, onChange }: Props) {
           {exportableCount} of {order.length} track{order.length === 1 ? "" : "s"} can be
           exported to Spotify. Sample tracks are a small built-in demo pool used to test
           the energy fit — they are not related to your Spotify taste and can&apos;t be
-          exported; search below to add real tracks instead.
+          exported; use the suggestions or search below to add real tracks instead.
         </p>
       )}
+
+      <div className="rounded-[var(--radius-panel)] border border-border p-3">
+        <div className="flex items-center justify-between">
+          <h4 className="text-xs font-medium text-text">
+            {draftIsFull
+              ? "Suggested for you"
+              : `Suggested for you — ${nextMoodLabel.toLowerCase()} · around minute ${Math.round(nextStartSec / 60)}`}
+          </h4>
+          {connected && !draftIsFull && (
+            <button
+              type="button"
+              onClick={() => setSuggestRotation((r) => r + 1)}
+              className="text-[11px] text-text-muted hover:text-text"
+              title="Show different suggestions for this mood"
+            >
+              🔄 Shuffle
+            </button>
+          )}
+        </div>
+        {!connected ? (
+          <p className="mt-1 text-xs text-text-muted">
+            Connect Spotify to get track suggestions matched to your taste and to the
+            mood at this point in the class.
+          </p>
+        ) : draftIsFull ? (
+          <p className="mt-1 text-xs text-text-muted">
+            The draft already fills the class length — remove or shorten something to
+            get more suggestions.
+          </p>
+        ) : (
+          <>
+            <p className="mt-1 text-[11px] text-text-muted">
+              Based on your Spotify taste and the energy arc at this point
+              {suggestGenre ? ` — genre: ${suggestGenre}` : ""}. This is a heuristic
+              (Spotify doesn&apos;t expose real audio-mood data for new apps), so tap 🔄
+              if these don&apos;t feel right.
+            </p>
+            {suggesting && <p className="mt-2 text-xs text-text-muted">Loading…</p>}
+            {suggestionError && (
+              <p className="mt-2 text-xs text-danger">{suggestionError}</p>
+            )}
+            {!suggesting && suggestions.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {suggestions.map((t) => (
+                  <TrackResultRow
+                    key={t.id}
+                    track={t}
+                    isPreviewOpen={previewTrackId === t.id}
+                    onTogglePreview={() => togglePreview(t.id)}
+                    onAdd={() => addSpotifyTrack(t)}
+                  />
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </div>
 
       {availableMockTracks.length > 0 && (
         <div className="flex items-center gap-2">
@@ -358,47 +540,15 @@ export function TrackRail({ order, curve, connected, seed, onChange }: Props) {
             {searchError && <p className="mt-2 text-xs text-danger">{searchError}</p>}
             {results.length > 0 && (
               <ul className="mt-2 max-h-72 space-y-1 overflow-y-auto">
-                {results.map((t) => {
-                  const isResultPreviewOpen = previewTrackId === t.id;
-                  return (
-                    <li
-                      key={t.id}
-                      className="rounded-[var(--radius-control)] px-2 py-1.5 text-xs hover:bg-surface-subtle"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate">
-                          <span className="font-medium text-text">{t.title}</span>{" "}
-                          <span className="text-text-muted">
-                            — {t.artist} ({formatMs(t.durationMs)})
-                          </span>
-                        </span>
-                        <span className="flex shrink-0 items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => togglePreview(t.id)}
-                            aria-pressed={isResultPreviewOpen}
-                            aria-label={isResultPreviewOpen ? "Hide preview" : "Preview track"}
-                            className={`h-6 w-6 rounded-full hover:bg-surface ${isResultPreviewOpen ? "text-primary" : "text-text-muted"}`}
-                          >
-                            {isResultPreviewOpen ? "◼" : "▶"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => addSpotifyTrack(t)}
-                            className="rounded-full bg-primary px-2 py-1 text-[10px] font-medium text-white hover:opacity-90"
-                          >
-                            + Add
-                          </button>
-                        </span>
-                      </div>
-                      {isResultPreviewOpen && (
-                        <div className="mt-1.5">
-                          <SpotifyPreviewEmbed trackId={t.id} />
-                        </div>
-                      )}
-                    </li>
-                  );
-                })}
+                {results.map((t) => (
+                  <TrackResultRow
+                    key={t.id}
+                    track={t}
+                    isPreviewOpen={previewTrackId === t.id}
+                    onTogglePreview={() => togglePreview(t.id)}
+                    onAdd={() => addSpotifyTrack(t)}
+                  />
+                ))}
               </ul>
             )}
           </>
