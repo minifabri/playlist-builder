@@ -1,7 +1,7 @@
 import { sampleEnergyAt } from "@/domain/energy/sampleTargetEnergy";
 import type { EnergyCurve } from "@/domain/energy/types";
 import { MOCK_TRACK_POOL } from "./mockTracks";
-import type { OrderedTrack } from "./calculatePlacements";
+import type { DraftTrack } from "./types";
 
 /**
  * Build an initial ordered track list from the local mock pool by
@@ -12,11 +12,13 @@ import type { OrderedTrack } from "./calculatePlacements";
  * This is a placeholder "nearest fit" picker for the Phase 0 vertical
  * slice — it is NOT the scoring/generation engine from
  * 05_PLAYLIST_ENGINE.md (no taste/phase/transition fit, no Spotify
- * candidates). That engine is scoped to a later phase.
+ * candidates). That engine is scoped to a later phase. Tracks produced
+ * here are always source: "mock" and cannot be exported to Spotify —
+ * use track search to add real, exportable tracks to the draft.
  */
-export function generateMockDraft(curve: EnergyCurve): OrderedTrack[] {
+export function generateMockDraft(curve: EnergyCurve): DraftTrack[] {
   const remaining = [...MOCK_TRACK_POOL];
-  const order: OrderedTrack[] = [];
+  const order: DraftTrack[] = [];
   let cursorMs = 0;
   const targetMs = curve.durationSec * 1000;
 
@@ -35,7 +37,16 @@ export function generateMockDraft(curve: EnergyCurve): OrderedTrack[] {
     });
 
     const [chosen] = remaining.splice(bestIndex, 1);
-    order.push({ trackId: chosen.id, locked: false });
+    order.push({
+      id: chosen.id,
+      source: "mock",
+      title: chosen.title,
+      artist: chosen.artist,
+      durationMs: chosen.durationMs,
+      energyEstimate: chosen.energyEstimate,
+      vocalsLevel: chosen.vocalsLevel,
+      locked: false,
+    });
     cursorMs += chosen.durationMs;
   }
 

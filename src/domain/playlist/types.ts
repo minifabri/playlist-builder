@@ -26,3 +26,37 @@ export type TrackPlacement = {
   targetEnergy: number;
   estimatedEnergy: number;
 };
+
+/**
+ * Where a draft track's data came from.
+ * "mock" — the local fictional pool (mockTracks.ts), for offline prototyping.
+ * "spotify" — a real track resolved via the Spotify search adapter; carries
+ * a real spotifyUri and is the only kind that can be exported to Spotify
+ * (08_SPOTIFY_INTEGRATION.md — create playlist / add items).
+ */
+export type TrackSource = "mock" | "spotify";
+
+/**
+ * A track placed in the playlist draft. Denormalized on purpose: the draft
+ * rail should not need to re-resolve a track against a pool to render or
+ * export it, since mock and Spotify tracks live in different sources.
+ */
+export type DraftTrack = {
+  id: string;
+  source: TrackSource;
+  /** e.g. "spotify:track:...". Present only when source === "spotify". */
+  spotifyUri?: string;
+  title: string;
+  artist: string;
+  durationMs: number;
+  /**
+   * App-owned estimate, 0..100 — never presented as a Spotify audio feature
+   * (Spotify Audio Features/Analysis are unavailable for new apps, see
+   * 08_SPOTIFY_INTEGRATION.md). Spotify-sourced tracks default to a neutral
+   * 50 until a future phase adds real profiling (07_ARCHITECTURE.md —
+   * TrackEnergyProfiler).
+   */
+  energyEstimate: number;
+  vocalsLevel: number; // 0 instrumental .. 100 vocal
+  locked: boolean;
+};

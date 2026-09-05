@@ -1,13 +1,10 @@
 import { sampleTargetEnergy } from "@/domain/energy/sampleTargetEnergy";
 import type { EnergyCurve } from "@/domain/energy/types";
-import { MOCK_TRACK_POOL } from "./mockTracks";
-import type { TrackPlacement } from "./types";
+import type { DraftTrack, TrackPlacement } from "./types";
 
-export type OrderedTrack = { trackId: string; locked: boolean };
-
-function trackById(trackId: string) {
-  return MOCK_TRACK_POOL.find((t) => t.id === trackId);
-}
+export type { DraftTrack } from "./types";
+/** @deprecated use DraftTrack — kept as an alias so older imports don't churn. */
+export type OrderedTrack = DraftTrack;
 
 /**
  * Recalculate cumulative placements for an ordered track list.
@@ -16,26 +13,23 @@ function trackById(trackId: string) {
  * from the curve over the track's [start, end] interval.
  */
 export function calculatePlacements(
-  order: OrderedTrack[],
+  order: DraftTrack[],
   curve: EnergyCurve,
 ): TrackPlacement[] {
   let cursorMs = 0;
   const placements: TrackPlacement[] = [];
 
-  order.forEach((entry, index) => {
-    const track = trackById(entry.trackId);
-    if (!track) return;
-
+  order.forEach((track, index) => {
     const startMs = cursorMs;
     const endMs = cursorMs + track.durationMs;
     cursorMs = endMs;
 
     placements.push({
-      trackId: entry.trackId,
+      trackId: track.id,
       position: index,
       startMs,
       endMs,
-      locked: entry.locked,
+      locked: track.locked,
       targetEnergy: sampleTargetEnergy(curve, startMs / 1000, endMs / 1000),
       estimatedEnergy: track.energyEstimate,
     });
@@ -44,11 +38,8 @@ export function calculatePlacements(
   return placements;
 }
 
-export function totalDurationMs(order: OrderedTrack[]): number {
-  return order.reduce((sum, entry) => {
-    const track = trackById(entry.trackId);
-    return sum + (track?.durationMs ?? 0);
-  }, 0);
+export function totalDurationMs(order: DraftTrack[]): number {
+  return order.reduce((sum, track) => sum + track.durationMs, 0);
 }
 
 export function formatDurationDelta(
