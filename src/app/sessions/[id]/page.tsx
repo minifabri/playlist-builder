@@ -219,6 +219,13 @@ export default function SessionEditorPage({
   async function handleExport() {
     if (!session || exportableUris.length === 0) return;
     setExportState({ status: "exporting" });
+
+    // Open the destination tab synchronously, inside the click's user
+    // gesture — opening it later (after the await below) is what browsers'
+    // popup blockers silently swallow, which is why "nothing seemed to
+    // happen" before. We navigate this same tab once we have the real URL.
+    const destinationTab = window.open("about:blank", "_blank");
+
     try {
       const res = await fetch(`/api/sessions/${id}/export`, {
         method: "POST",
@@ -231,6 +238,7 @@ export default function SessionEditorPage({
       });
       const data = await res.json();
       if (!res.ok) {
+        destinationTab?.close();
         const message =
           data.code === "AUTH_EXPIRED" || data.code === "NOT_CONNECTED"
             ? "La sessione Spotify è scaduta — riconnettiti e riprova."
@@ -245,8 +253,12 @@ export default function SessionEditorPage({
         }
         return;
       }
+      if (destinationTab) {
+        destinationTab.location.href = data.playlistUrl;
+      }
       setExportState({ status: "done", playlistUrl: data.playlistUrl });
     } catch {
+      destinationTab?.close();
       setExportState({
         status: "error",
         message: "Esportazione non riuscita. Controlla la connessione.",
@@ -349,6 +361,36 @@ export default function SessionEditorPage({
         </div>
       )}
 
+      {exportState.status === "done" && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-sage-soft px-6 py-3 text-sm text-sage-strong sm:px-10">
+          <span>Playlist creata su Spotify.</span>
+          <div className="flex items-center gap-3">
+            <a href={exportState.playlistUrl} target="_blank" rel="noopener noreferrer">
+              <Button size="sm">Apri playlist ↗</Button>
+            </a>
+            <button
+              type="button"
+              onClick={() => setExportState({ status: "idle" })}
+              className="text-xs text-sage-strong underline"
+            >
+              dismiss
+            </button>
+          </div>
+        </div>
+      )}
+      {exportState.status === "error" && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-danger/10 px-6 py-3 text-sm text-danger sm:px-10">
+          <span>{exportState.message}</span>
+          <button
+            type="button"
+            onClick={() => setExportState({ status: "idle" })}
+            className="text-xs text-danger underline"
+          >
+            dismiss
+          </button>
+        </div>
+      )}
+
       <main className="mx-auto grid w-full max-w-6xl flex-1 gap-8 px-6 py-8 sm:px-10 lg:grid-cols-[1fr_18rem]">
         <div className="space-y-8">
           <section className="rounded-[var(--radius-panel)] border border-border bg-surface p-5">
@@ -394,23 +436,6 @@ export default function SessionEditorPage({
               onChange={updateOrder}
             />
 
-            {exportState.status === "done" && (
-              <p className="mt-3 text-xs text-sage-strong">
-                Playlist creata su Spotify —{" "}
-                <a
-                  href={exportState.playlistUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline"
-                >
-                  aprila su Spotify
-                </a>
-                .
-              </p>
-            )}
-            {exportState.status === "error" && (
-              <p className="mt-3 text-xs text-danger">{exportState.message}</p>
-            )}
             {spotifyConnected && exportableUris.length > 0 && (
               <label className="mt-3 flex items-center gap-2 text-xs text-text-muted">
                 <input
