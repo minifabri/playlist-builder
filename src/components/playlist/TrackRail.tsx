@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { energyLabel, sampleEnergyAt } from "@/domain/energy";
+import { useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
+import { energyLabel, energyLabelMidpoint, ENERGY_LABEL_ORDER, sampleEnergyAt } from "@/domain/energy";
 import type { EnergyCurve } from "@/domain/energy/types";
 import {
   calculatePlacements,
@@ -10,6 +10,7 @@ import {
 } from "@/domain/playlist/calculatePlacements";
 import { MOCK_TRACK_POOL } from "@/domain/playlist/mockTracks";
 import { pickMoodSuggestionSeed } from "@/domain/playlist/moodSuggestions";
+import { refitOrderToCurve } from "@/domain/playlist/refitOrderToCurve";
 import type { DraftTrack } from "@/domain/playlist/types";
 import { Button } from "@/components/ui/Button";
 import type { TrackSummary } from "@/integrations/spotify/types";
@@ -125,9 +126,16 @@ export function TrackRail({
   const [suggestRotation, setSuggestRotation] = useState(0);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
   const placements = calculatePlacements(order, curve);
   const totalMs = totalDurationMs(order);
   const durationFeedback = formatDurationDelta(totalMs, curve.durationSec);
+  const mismatchCount = placements.filter(
+    (p, i) => energyLabel(p.targetEnergy) !== energyLabel(order[i]?.energyEstimate ?? 50),
+  ).length;
+  const unlockedCount = order.filter((t) => !t.locked).length;
   const availableMockTracks = MOCK_TRACK_POOL.filter(
     (t) => !order.some((o) => o.source === "mock" && o.id === t.id),
   );
@@ -149,11 +157,50 @@ export function TrackRail({
     onChange(next);
   }
 
+  function reorder(fromIndex: number, toIndex: number) {
+    if (fromIndex === toIndex) return;
+    const next = [...order];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved);
+    onChange(next);
+  }
+
+  function handleDragStart(index: number) {
+    setDragIndex(index);
+  }
+
+  function handleDragOver(e: DragEvent<HTMLLIElement>, index: number) {
+    e.preventDefault();
+    if (dragIndex !== null && index !== dragOverIndex) setDragOverIndex(index);
+  }
+
+  function handleDrop(index: number) {
+    if (dragIndex !== null) reorder(dragIndex, index);
+    setDragIndex(null);
+    setDragOverIndex(null);
+  }
+
+  function handleDragEnd() {
+    setDragIndex(null);
+    setDragOverIndex(null);
+  }
+
   function toggleLock(index: number) {
     const next = order.map((entry, i) =>
       i === index ? { ...entry, locked: !entry.locked } : entry,
     );
     onChange(next);
+  }
+
+  function rateTrackEnergy(index: number, label: string) {
+    const next = order.map((entry, i) =>
+      i === index ? { ...entry, energyEstimate: energyLabelMidpoint(label) } : entry,
+    );
+    onChange(next);
+  }
+
+  function fitToCurve() {
+    onChange(refitOrderToCurve(order, curve));
   }
 
   function remove(index: number) {
@@ -299,7 +346,7 @@ export function TrackRail({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-medium text-text">Playlist draft</h3>
         <span
           className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
@@ -311,6 +358,31 @@ export function TrackRail({
           {formatMs(totalMs)} total · {durationFeedback.label}
         </span>
       </div>
+
+      {order.length > 1 && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {mismatchCount > 0 ? (
+            <p className="text-xs text-warning">
+              ⚠️ {mismatchCount} track{mismatchCount === 1 ? "" : "s"} rated for a
+              different mood than the arc calls for at that point — move it, replace
+              it, or fix its rating below.
+            </p>
+          ) : (
+            <span className="text-xs text-sage-strong">
+              ✓ Every track&apos;s rating matches the mood at its spot in the class.
+            </span>
+          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={fitToCurve}
+            disabled={unlockedCount < 2}
+            title="Reorders the unlocked 🔓 tracks (locked 🔒 ones never move) so each one's energy rating sits closer to what the arc calls for at that point. It only reorders what's already in the draft — it doesn't find or swap in new tracks."
+          >
+            Fit to curve
+          </Button>
+        </div>
+      )}
 
       {/* Proportional rail aligned to class time */}
       <div className="flex h-8 w-full overflow-hidden rounded-[var(--radius-control)] border border-border">
@@ -342,9 +414,31 @@ export function TrackRail({
           const track = order[index];
           if (!track) return null;
           const isPreviewOpen = previewTrackId === track.id;
+          const trackLabel = energyLabel(track.energyEstimate);
+          const targetLabel = energyLabel(p.targetEnergy);
+          const mismatch = trackLabel !== targetLabel;
           return (
-            <li key={`${p.trackId}-${index}`} className="px-4 py-3 text-sm">
+            <li
+              key={`${p.trackId}-${index}`}
+              className={`px-4 py-3 text-sm ${dragIndex === index ? "opacity-40" : ""} ${
+                dragOverIndex === index && dragIndex !== index
+                  ? "bg-surface-subtle"
+                  : ""
+              }`}
+              draggable
+              onDragStart={() => handleDragStart(index)}
+              onDragOver={(e) => handleDragOver(e, index)}
+              onDrop={() => handleDrop(index)}
+              onDragEnd={handleDragEnd}
+            >
               <div className="flex flex-wrap items-center gap-3">
+                <span
+                  className="cursor-grab select-none text-text-muted active:cursor-grabbing"
+                  aria-hidden="true"
+                  title="Drag to reorder"
+                >
+                  ⠿
+                </span>
                 <div className="min-w-[10ch] text-text-muted text-xs tabular-nums">
                   {formatMs(p.startMs)}
                 </div>
@@ -365,8 +459,36 @@ export function TrackRail({
                 <div className="text-xs text-text-muted min-w-[6ch] tabular-nums">
                   {formatMs(track.durationMs)}
                 </div>
-                <div className="text-xs text-text-muted min-w-[9rem]">
-                  target {Math.round(p.targetEnergy)} · fits {energyLabel(p.targetEnergy)}
+                <div className="min-w-[10rem] text-xs text-text-muted">
+                  <div className="flex items-center gap-1">
+                    <span>
+                      target {Math.round(p.targetEnergy)} · {targetLabel}
+                    </span>
+                    {mismatch && (
+                      <span
+                        title={`Rated "${trackLabel}", but this spot in the class calls for "${targetLabel}" — consider moving, replacing, or re-rating this track.`}
+                      >
+                        ⚠️
+                      </span>
+                    )}
+                  </div>
+                  <select
+                    value={trackLabel}
+                    onChange={(e) => rateTrackEnergy(index, e.target.value)}
+                    aria-label={`Your energy rating for ${track.title}`}
+                    title={
+                      track.source === "spotify"
+                        ? "Spotify doesn't tell us how energetic a track feels (that data isn't available to new apps) — rate it yourself so the match check and \"Fit to curve\" can use it."
+                        : "Adjust this sample track's energy rating."
+                    }
+                    className="mt-1 h-6 rounded border border-border bg-surface px-1 text-[10px] text-text"
+                  >
+                    {ENERGY_LABEL_ORDER.map((label) => (
+                      <option key={label} value={label}>
+                        rated: {label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="flex items-center gap-1">
                   {track.source === "spotify" && (
@@ -432,7 +554,9 @@ export function TrackRail({
           {exportableCount} of {order.length} track{order.length === 1 ? "" : "s"} can be
           exported to Spotify. Sample tracks are a small built-in demo pool used to test
           the energy fit — they are not related to your Spotify taste and can&apos;t be
-          exported; use the suggestions or search below to add real tracks instead.
+          exported; use the suggestions or search below to add real tracks instead. Drag
+          ⠿ a track (or use ↑↓) to reorder by hand, or set each track&apos;s energy rating
+          and tap &quot;Fit to curve&quot; to reorder the unlocked ones automatically.
         </p>
       )}
 
