@@ -13,7 +13,7 @@ import type { ClassSession } from "@/domain/class-session/types";
 import type { EnergyCurve } from "@/domain/energy/types";
 import { scaleCurveToDuration, applyPhasesToDuration, normalizePhases } from "@/domain/energy/scaleCurve";
 import { validateCurve } from "@/domain/energy/validateCurve";
-import { energyLabelMidpoint, sampleEnergyAt } from "@/domain/energy";
+import { energyLabel, energyLabelMidpoint, sampleEnergyAt, sampleTargetEnergy } from "@/domain/energy";
 import type { DraftTrack } from "@/domain/playlist/types";
 import { planDraftSegments } from "@/domain/playlist/planDraftSegments";
 import {
@@ -39,7 +39,8 @@ type GenerateState =
   | { status: "error"; added: number; message: string };
 
 const GENERATE_MIN_LEFTOVER_SEC = 45;
-const GENERATE_MAX_ATTEMPTS_PER_SLOT = 4;
+const GENERATE_ATTEMPTS_PER_SLOT = 4;
+const GENERATE_MAX_CONSECUTIVE_SLOT_FAILURES = 3;
 const GENERATE_MAX_PER_ARTIST = 2;
 
 export default function SessionEditorPage({
@@ -323,6 +324,20 @@ export default function SessionEditorPage({
   // again any time after changing the arc, genres, or Music Intent to
   // bring the rest of the draft up to date — it always regenerates from
   // scratch using whatever the current tuning is.
+  //
+  // The search cursor only ever advances by a track's REAL duration —
+  // never by a guessed/skipped amount — so the point on the curve we
+  // search against always matches where the track actually ends up once
+  // placed. (An earlier version nudged the cursor forward when a slot
+  // came up empty, which quietly drifted the two apart and made
+  // generated tracks land on the wrong part of the arc — the "doesn't
+  // fit the graph" bug.) Each slot escalates through a few attempts —
+  // different genre picks, paging further into Spotify's results via
+  // `offset` so repeats don't just resurface the same 10 tracks, and a
+  // final attempt that ignores the genre picker/exclusions entirely — so
+  // one narrow or exhausted genre can't strand a slot. Only several
+  // consecutive total dead ends (a real API/network problem) stop
+  // generation early, and the result always says exactly how far it got.
   async function generatePlaylist() {
     if (!session || !spotifyConnected) return;
     setGenerateState({ status: "generating", added: 0 });
@@ -330,6 +345,7 @@ export default function SessionEditorPage({
     const segments = planDraftSegments(order, session.curve);
     const next: DraftTrack[] = [];
     const artistCounts = new Map<string, number>();
+    const genreOffsets = new Map<string, number>();
     for (const seg of segments) {
       if (seg.type === "locked") {
         const key = seg.track.artist.toLowerCase();
@@ -339,7 +355,8 @@ export default function SessionEditorPage({
 
     let rotation = 0;
     let added = 0;
-    let hadError = false;
+    let hadNetworkError = false;
+    let stoppedEarly = false;
     const topArtistNames = topArtists.map((a) => a.name);
 
     for (const seg of segments) {
@@ -349,94 +366,141 @@ export default function SessionEditorPage({
       }
 
       let cursorSec = seg.startSec;
-      let attemptsWithoutSuccess = 0;
-      while (
-        seg.endSec - cursorSec >= GENERATE_MIN_LEFTOVER_SEC &&
-        attemptsWithoutSuccess < GENERATE_MAX_ATTEMPTS_PER_SLOT
-      ) {
+      let consecutiveSlotFailures = 0;
+      while (seg.endSec - cursorSec >= GENERATE_MIN_LEFTOVER_SEC) {
         const targetEnergy = sampleEnergyAt(
           session.curve,
           Math.min(cursorSec, session.curve.durationSec),
         );
-        const seedPick = pickMoodSuggestionSeed(
-          targetEnergy,
-          {
-            preferredGenres,
-            excludedGenres,
-            organicElectronic: session.musicIntent.organicElectronic,
-            drive: session.musicIntent.drive,
-          },
-          rotation,
-        );
-        rotation++;
 
-        try {
-          const query = buildSuggestionSearchQuery(seedPick.genre, session.musicIntent.vocals);
-          const res = await fetch(`/api/music/search/tracks?q=${encodeURIComponent(query)}`);
-          if (!res.ok) {
-            attemptsWithoutSuccess++;
-            continue;
-          }
-          const data = await res.json();
-          const candidates: TrackSummary[] = data.items ?? [];
-          const ranked = rankByFamiliarity(
-            candidates,
-            topArtistNames,
-            session.musicIntent.familiarity,
+        let chosen: TrackSummary | null = null;
+
+        for (let attempt = 0; attempt < GENERATE_ATTEMPTS_PER_SLOT && !chosen; attempt++) {
+          // Last attempt for this slot: drop the genre picker/exclusions
+          // and search the full curated pool for this mood — better to
+          // land something on-mood than leave a hole in the arc.
+          const isLastAttempt = attempt === GENERATE_ATTEMPTS_PER_SLOT - 1;
+          const seedPick = pickMoodSuggestionSeed(
+            targetEnergy,
+            isLastAttempt
+              ? {
+                  organicElectronic: session.musicIntent.organicElectronic,
+                  drive: session.musicIntent.drive,
+                }
+              : {
+                  preferredGenres,
+                  excludedGenres,
+                  organicElectronic: session.musicIntent.organicElectronic,
+                  drive: session.musicIntent.drive,
+                },
+            rotation,
           );
-          const alreadyPicked = (t: TrackSummary) =>
-            next.some((d) => d.source === "spotify" && d.id === t.id);
-          const withinDiversity = (t: TrackSummary) =>
-            (artistCounts.get(t.artist.toLowerCase()) ?? 0) < GENERATE_MAX_PER_ARTIST;
-          const chosen =
-            ranked.find((t) => !alreadyPicked(t) && withinDiversity(t)) ??
-            ranked.find((t) => !alreadyPicked(t));
+          rotation++;
+          const offset = genreOffsets.get(seedPick.genre) ?? 0;
 
-          if (!chosen) {
-            attemptsWithoutSuccess++;
-            continue;
+          try {
+            const query = buildSuggestionSearchQuery(seedPick.genre, session.musicIntent.vocals);
+            const res = await fetch(
+              `/api/music/search/tracks?q=${encodeURIComponent(query)}&offset=${offset}`,
+            );
+            if (!res.ok) continue;
+            const data = await res.json();
+            const candidates: TrackSummary[] = data.items ?? [];
+            if (candidates.length > 0) {
+              genreOffsets.set(seedPick.genre, offset + candidates.length);
+            }
+            const ranked = rankByFamiliarity(
+              candidates,
+              topArtistNames,
+              session.musicIntent.familiarity,
+            );
+            const alreadyPicked = (t: TrackSummary) =>
+              next.some((d) => d.source === "spotify" && d.id === t.id);
+            const withinDiversity = (t: TrackSummary) =>
+              (artistCounts.get(t.artist.toLowerCase()) ?? 0) < GENERATE_MAX_PER_ARTIST;
+            chosen =
+              ranked.find((t) => !alreadyPicked(t) && withinDiversity(t)) ??
+              ranked.find((t) => !alreadyPicked(t)) ??
+              null;
+          } catch {
+            hadNetworkError = true;
           }
-
-          const newTrack: DraftTrack = {
-            id: chosen.id,
-            source: "spotify",
-            spotifyUri: chosen.uri,
-            title: chosen.title,
-            artist: chosen.artist,
-            durationMs: chosen.durationMs,
-            // Picked deliberately for this slot's mood, so we can seed a
-            // real rating instead of the usual neutral default — she can
-            // always correct it herself afterward.
-            energyEstimate: energyLabelMidpoint(seedPick.moodLabel),
-            vocalsLevel: 50,
-            locked: false,
-          };
-          next.push(newTrack);
-          artistCounts.set(
-            chosen.artist.toLowerCase(),
-            (artistCounts.get(chosen.artist.toLowerCase()) ?? 0) + 1,
-          );
-          cursorSec += newTrack.durationMs / 1000;
-          added++;
-          attemptsWithoutSuccess = 0;
-          setGenerateState({ status: "generating", added });
-        } catch {
-          hadError = true;
-          attemptsWithoutSuccess++;
         }
+
+        if (!chosen) {
+          consecutiveSlotFailures++;
+          if (consecutiveSlotFailures >= GENERATE_MAX_CONSECUTIVE_SLOT_FAILURES) {
+            stoppedEarly = true;
+            break;
+          }
+          continue; // retry the same position — cursorSec does not move without a real track
+        }
+
+        consecutiveSlotFailures = 0;
+        // Rate the track against what the arc actually asks for across the
+        // exact interval it will occupy (the same calculation
+        // calculatePlacements uses) — not the single, possibly
+        // drive-nudged point we searched with. That nudge is a search
+        // bias ("look for something a bit more/less driving"), not a
+        // claim about where the track really sits on the curve; rating it
+        // that way would make freshly generated tracks show a false
+        // "doesn't fit" warning against the very arc we just matched them to.
+        const trackEndSec = Math.min(
+          cursorSec + chosen.durationMs / 1000,
+          session.curve.durationSec,
+        );
+        const intervalTargetEnergy = sampleTargetEnergy(session.curve, cursorSec, trackEndSec);
+        const newTrack: DraftTrack = {
+          id: chosen.id,
+          source: "spotify",
+          spotifyUri: chosen.uri,
+          title: chosen.title,
+          artist: chosen.artist,
+          durationMs: chosen.durationMs,
+          energyEstimate: energyLabelMidpoint(energyLabel(intervalTargetEnergy)),
+          vocalsLevel: 50,
+          locked: false,
+        };
+        next.push(newTrack);
+        artistCounts.set(
+          chosen.artist.toLowerCase(),
+          (artistCounts.get(chosen.artist.toLowerCase()) ?? 0) + 1,
+        );
+        cursorSec += newTrack.durationMs / 1000;
+        added++;
+        setGenerateState({ status: "generating", added });
       }
     }
 
     updateOrder(next);
     setGenerateState(
-      hadError
+      hadNetworkError
         ? {
             status: "error",
             added,
             message: `Generati ${added} brani, poi la ricerca Spotify non ha risposto — completa a mano o riprova.`,
           }
-        : { status: "done", added },
+        : stoppedEarly
+          ? {
+              status: "error",
+              added,
+              message: `Generati ${added} brani, poi non ho trovato altri brani adatti per completare tutta la classe — completa a mano, oppure prova ad allargare i generi selezionati.`,
+            }
+          : { status: "done", added },
     );
+  }
+
+  function resetPlaylist() {
+    if (order.length === 0) return;
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm("Reset the whole playlist? This removes every track, including locked ones.")
+    ) {
+      return;
+    }
+    updateOrder([]);
+    setGenerateState({ status: "idle" });
+    setExportState({ status: "idle" });
   }
 
   const exportableUris = useMemo(
@@ -549,6 +613,15 @@ export default function SessionEditorPage({
           <span className="text-xs text-text-muted">
             {savedState === "saving" ? "Saving…" : "Saved"}
           </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={resetPlaylist}
+            disabled={order.length === 0 || generateState.status === "generating"}
+            title="Removes every track from the draft, including locked ones, so you can start over."
+          >
+            Reset playlist
+          </Button>
           <Button
             variant="secondary"
             size="sm"
