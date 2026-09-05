@@ -3,13 +3,17 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 import { energyLabel, energyLabelMidpoint, ENERGY_LABEL_ORDER, sampleEnergyAt } from "@/domain/energy";
 import type { EnergyCurve } from "@/domain/energy/types";
+import type { MusicIntent } from "@/domain/class-session/types";
 import {
   calculatePlacements,
   formatDurationDelta,
   totalDurationMs,
 } from "@/domain/playlist/calculatePlacements";
-import { MOCK_TRACK_POOL } from "@/domain/playlist/mockTracks";
-import { pickMoodSuggestionSeed } from "@/domain/playlist/moodSuggestions";
+import {
+  buildSuggestionSearchQuery,
+  pickMoodSuggestionSeed,
+  rankByFamiliarity,
+} from "@/domain/playlist/moodSuggestions";
 import { refitOrderToCurve } from "@/domain/playlist/refitOrderToCurve";
 import type { DraftTrack } from "@/domain/playlist/types";
 import { Button } from "@/components/ui/Button";
@@ -28,6 +32,13 @@ type Props = {
   /** Genres that must never be suggested (e.g. genres from her real
    * Spotify taste that don't belong in a yoga class). */
   excludedGenres?: string[];
+  /** The Music Intent dials (Discovery↔Familiar, Instrumental↔Vocal,
+   * Organic↔Electronic, Soft↔Driving) — feed "Suggested for you". */
+  musicIntent: MusicIntent;
+  /** The teacher's real Spotify top artist names, used only to rank
+   * "Suggested for you" results toward/away from names she knows
+   * (Discovery↔Familiar) — never to fetch anything. */
+  topArtistNames?: string[];
   /** Set by the parent when a top artist/genre chip is clicked, to run a
    * search here without lifting the whole search UI up. */
   seed?: SearchSeed | null;
@@ -115,6 +126,8 @@ export function TrackRail({
   connected,
   preferredGenres = [],
   excludedGenres = [],
+  musicIntent,
+  topArtistNames = [],
   seed,
   onChange,
 }: Props) {
@@ -142,9 +155,6 @@ export function TrackRail({
     (p, i) => energyLabel(p.targetEnergy) !== energyLabel(order[i]?.energyEstimate ?? 50),
   ).length;
   const unlockedCount = order.filter((t) => !t.locked).length;
-  const availableMockTracks = MOCK_TRACK_POOL.filter(
-    (t) => !order.some((o) => o.source === "mock" && o.id === t.id),
-  );
   const exportableCount = order.filter((t) => t.source === "spotify").length;
 
   // Where the next track would land, and what mood the class arc calls
@@ -155,6 +165,8 @@ export function TrackRail({
   const nextMoodLabel = energyLabel(nextTargetEnergy);
   const preferredGenresKey = preferredGenres.join("|");
   const excludedGenresKey = excludedGenres.join("|");
+  const musicIntentKey = `${musicIntent.organicElectronic}|${musicIntent.vocals}|${musicIntent.drive}|${musicIntent.familiarity}`;
+  const topArtistNamesKey = topArtistNames.join("|");
 
   function move(index: number, direction: -1 | 1) {
     const target = index + direction;
@@ -212,24 +224,6 @@ export function TrackRail({
 
   function remove(index: number) {
     onChange(order.filter((_, i) => i !== index));
-  }
-
-  function addMockTrack(trackId: string) {
-    const track = MOCK_TRACK_POOL.find((t) => t.id === trackId);
-    if (!track) return;
-    onChange([
-      ...order,
-      {
-        id: track.id,
-        source: "mock",
-        title: track.title,
-        artist: track.artist,
-        durationMs: track.durationMs,
-        energyEstimate: track.energyEstimate,
-        vocalsLevel: track.vocalsLevel,
-        locked: false,
-      },
-    ]);
   }
 
   function addSpotifyTrack(track: TrackSummary) {
@@ -320,15 +314,19 @@ export function TrackRail({
       setSuggestionError(null);
       const seedPick = pickMoodSuggestionSeed(
         nextTargetEnergy,
-        { preferredGenres, excludedGenres },
+        {
+          preferredGenres,
+          excludedGenres,
+          organicElectronic: musicIntent.organicElectronic,
+          drive: musicIntent.drive,
+        },
         suggestRotation,
       );
       setSuggestGenre(seedPick.genre);
       setSuggestPersonalized(seedPick.personalized);
       try {
-        const res = await fetch(
-          `/api/music/search/tracks?q=${encodeURIComponent(`genre:"${seedPick.genre}"`)}`,
-        );
+        const query = buildSuggestionSearchQuery(seedPick.genre, musicIntent.vocals);
+        const res = await fetch(`/api/music/search/tracks?q=${encodeURIComponent(query)}`);
         const data = await res.json();
         if (!res.ok) {
           setSuggestionError(
@@ -338,7 +336,12 @@ export function TrackRail({
           );
           setSuggestions([]);
         } else {
-          setSuggestions((data.items ?? []).slice(0, 6));
+          const ranked = rankByFamiliarity(
+            (data.items ?? []) as TrackSummary[],
+            topArtistNames,
+            musicIntent.familiarity,
+          );
+          setSuggestions(ranked.slice(0, 6));
         }
       } catch {
         setSuggestionError("Suggerimenti non disponibili al momento.");
@@ -350,7 +353,16 @@ export function TrackRail({
       if (suggestTimer.current) clearTimeout(suggestTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, nextMoodLabel, preferredGenresKey, excludedGenresKey, suggestRotation, draftIsFull]);
+  }, [
+    connected,
+    nextMoodLabel,
+    preferredGenresKey,
+    excludedGenresKey,
+    musicIntentKey,
+    topArtistNamesKey,
+    suggestRotation,
+    draftIsFull,
+  ]);
 
   function togglePreview(trackId: string) {
     setPreviewTrackId((current) => (current === trackId ? null : trackId));
@@ -564,11 +576,9 @@ export function TrackRail({
       {order.length > 0 && (
         <p className="text-[11px] text-text-muted">
           {exportableCount} of {order.length} track{order.length === 1 ? "" : "s"} can be
-          exported to Spotify. Sample tracks are a small built-in demo pool used to test
-          the energy fit — they are not related to your Spotify taste and can&apos;t be
-          exported; use the suggestions or search below to add real tracks instead. Drag
-          ⠿ a track (or use ↑↓) to reorder by hand, or set each track&apos;s energy rating
-          and tap &quot;Fit to curve&quot; to reorder the unlocked ones automatically.
+          exported to Spotify. Drag ⠿ a track (or use ↑↓) to reorder by hand, or set each
+          track&apos;s energy rating and tap &quot;Fit to curve&quot; to reorder the
+          unlocked ones automatically.
         </p>
       )}
 
@@ -634,29 +644,6 @@ export function TrackRail({
           </>
         )}
       </div>
-
-      {availableMockTracks.length > 0 && (
-        <div className="flex items-center gap-2">
-          <select
-            defaultValue=""
-            onChange={(e) => {
-              addMockTrack(e.target.value);
-              e.target.value = "";
-            }}
-            className="h-9 flex-1 rounded-[var(--radius-control)] border border-border bg-surface px-3 text-sm text-text"
-            aria-label="Add a sample track"
-          >
-            <option value="" disabled>
-              Add a sample track (demo only, not your taste)…
-            </option>
-            {availableMockTracks.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.title} — {t.artist} ({formatMs(t.durationMs)})
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
 
       <div className="rounded-[var(--radius-panel)] border border-border p-3">
         <h4 className="text-xs font-medium text-text">Search Spotify</h4>

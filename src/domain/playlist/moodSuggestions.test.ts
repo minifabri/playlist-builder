@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { pickMoodSuggestionSeed } from "./moodSuggestions";
+import {
+  buildSuggestionSearchQuery,
+  pickMoodSuggestionSeed,
+  rankByFamiliarity,
+  wantsInstrumentalSearch,
+} from "./moodSuggestions";
 
 describe("pickMoodSuggestionSeed", () => {
   it("maps low energy to a calm curated yoga genre with no preferences set", () => {
@@ -57,5 +62,91 @@ describe("pickMoodSuggestionSeed", () => {
     const first = pickMoodSuggestionSeed(50, {}, 0);
     const second = pickMoodSuggestionSeed(50, {}, 1);
     expect(first.genre).not.toBe(second.genre);
+  });
+
+  it("leans organic when the Organic ↔ Electronic dial is turned toward organic", () => {
+    for (let rotation = 0; rotation < 6; rotation++) {
+      const seed = pickMoodSuggestionSeed(50, { organicElectronic: 0 }, rotation);
+      expect(["indie folk", "nu jazz", "neo soul", "bossa nova", "world fusion"]).toContain(
+        seed.genre,
+      );
+    }
+  });
+
+  it("leans electronic when the Organic ↔ Electronic dial is turned toward electronic", () => {
+    for (let rotation = 0; rotation < 6; rotation++) {
+      const seed = pickMoodSuggestionSeed(50, { organicElectronic: 100 }, rotation);
+      expect(seed.genre).toBe("chillwave");
+    }
+  });
+
+  it("leaves the pool alone when the Organic ↔ Electronic dial is near the middle", () => {
+    const seed = pickMoodSuggestionSeed(50, { organicElectronic: 50 });
+    expect([
+      "indie folk",
+      "nu jazz",
+      "neo soul",
+      "bossa nova",
+      "world fusion",
+      "chillwave",
+    ]).toContain(seed.genre);
+  });
+
+  it("nudges the mood band up when the Soft ↔ Driving dial leans driving", () => {
+    // 58 alone maps to "Flowing" (<=60); with drive=100 the nudge is +10 -> 68 -> "Driving".
+    const seed = pickMoodSuggestionSeed(58, { drive: 100 });
+    expect(seed.moodLabel).toBe("Driving");
+  });
+
+  it("nudges the mood band down when the Soft ↔ Driving dial leans soft", () => {
+    // 42 alone maps to "Flowing" (>40); with drive=0 the nudge is -10 -> 32 -> "Grounded".
+    const seed = pickMoodSuggestionSeed(42, { drive: 0 });
+    expect(seed.moodLabel).toBe("Grounded");
+  });
+});
+
+describe("wantsInstrumentalSearch / buildSuggestionSearchQuery", () => {
+  it("asks for instrumental results when the Vocal dial leans instrumental", () => {
+    expect(wantsInstrumentalSearch(10)).toBe(true);
+    expect(buildSuggestionSearchQuery("ambient", 10)).toBe('genre:"ambient" instrumental');
+  });
+
+  it("leaves the query alone when the dial is mid-range or vocal-leaning", () => {
+    expect(wantsInstrumentalSearch(50)).toBe(false);
+    expect(wantsInstrumentalSearch(90)).toBe(false);
+    expect(buildSuggestionSearchQuery("ambient", 90)).toBe('genre:"ambient"');
+  });
+
+  it("leaves the query alone when no preference is given", () => {
+    expect(wantsInstrumentalSearch(undefined)).toBe(false);
+    expect(buildSuggestionSearchQuery("ambient")).toBe('genre:"ambient"');
+  });
+});
+
+describe("rankByFamiliarity", () => {
+  const tracks = [
+    { id: "1", artist: "New Artist" },
+    { id: "2", artist: "Known Artist" },
+    { id: "3", artist: "Another New One" },
+  ];
+
+  it("surfaces known artists first when the dial leans familiar", () => {
+    const ranked = rankByFamiliarity(tracks, ["Known Artist"], 90);
+    expect(ranked[0].artist).toBe("Known Artist");
+  });
+
+  it("pushes known artists down when the dial leans discovery", () => {
+    const ranked = rankByFamiliarity(tracks, ["Known Artist"], 10);
+    expect(ranked[ranked.length - 1].artist).toBe("Known Artist");
+  });
+
+  it("leaves the original order alone near the middle of the dial", () => {
+    const ranked = rankByFamiliarity(tracks, ["Known Artist"], 50);
+    expect(ranked).toEqual(tracks);
+  });
+
+  it("leaves the original order alone when no preference is given", () => {
+    const ranked = rankByFamiliarity(tracks, ["Known Artist"], undefined);
+    expect(ranked).toEqual(tracks);
   });
 });
