@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { EnergyCurveEditor } from "@/components/energy-editor/EnergyCurveEditor";
-import { TrackRail } from "@/components/playlist/TrackRail";
+import { TrackRail, type SearchSeed } from "@/components/playlist/TrackRail";
 import { CLASS_TYPE_PRESETS } from "@/domain/class-session/presets";
 import { localClassSessionRepository } from "@/domain/class-session/repository";
 import type { ClassSession } from "@/domain/class-session/types";
@@ -41,10 +41,12 @@ export default function SessionEditorPage({
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [spotifyConnected, setSpotifyConnected] = useState(false);
+  const [spotifyDisplayName, setSpotifyDisplayName] = useState<string | null>(null);
   const [spotifyBanner, setSpotifyBanner] = useState<string | null>(null);
   const [topArtists, setTopArtists] = useState<ArtistSummary[]>([]);
   const [isPublicExport, setIsPublicExport] = useState(false);
   const [exportState, setExportState] = useState<ExportState>({ status: "idle" });
+  const [searchSeed, setSearchSeed] = useState<SearchSeed | null>(null);
 
   useEffect(() => {
     const found = localClassSessionRepository.get(id);
@@ -81,8 +83,10 @@ export default function SessionEditorPage({
       const res = await fetch("/api/music/status");
       const data = await res.json();
       setSpotifyConnected(Boolean(data.connected));
+      setSpotifyDisplayName(typeof data.displayName === "string" ? data.displayName : null);
     } catch {
       setSpotifyConnected(false);
+      setSpotifyDisplayName(null);
     }
   }, []);
 
@@ -117,7 +121,32 @@ export default function SessionEditorPage({
   async function disconnectSpotify() {
     await fetch("/api/spotify/disconnect", { method: "POST" });
     setSpotifyConnected(false);
+    setSpotifyDisplayName(null);
     setTopArtists([]);
+  }
+
+  // Top genres are derived client-side from the top artists' own genre
+  // tags — Spotify has no separate "top genres" endpoint, and genres are
+  // already part of the artist objects we fetch.
+  const topGenres = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const artist of topArtists) {
+      for (const genre of artist.genres) {
+        counts.set(genre, (counts.get(genre) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([genre]) => genre);
+  }, [topArtists]);
+
+  function seedSearchFromArtist(name: string) {
+    setSearchSeed((prev) => ({ query: `artist:"${name}"`, nonce: (prev?.nonce ?? 0) + 1 }));
+  }
+
+  function seedSearchFromGenre(genre: string) {
+    setSearchSeed((prev) => ({ query: `genre:"${genre}"`, nonce: (prev?.nonce ?? 0) + 1 }));
   }
 
   const scheduleSave = useCallback(
@@ -277,7 +306,12 @@ export default function SessionEditorPage({
           <span className="text-xs text-text-muted">
             {savedState === "saving" ? "Saving…" : "Saved"}
           </span>
-          <Button variant="secondary" size="sm" onClick={handleGenerateDraft}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleGenerateDraft}
+            title="Fills the draft from a small built-in sample pool to test the energy fit — not based on your Spotify taste"
+          >
             Generate draft
           </Button>
           <Button
@@ -356,6 +390,7 @@ export default function SessionEditorPage({
               order={order}
               curve={session.curve}
               connected={spotifyConnected}
+              seed={searchSeed}
               onChange={updateOrder}
             />
 
@@ -395,18 +430,43 @@ export default function SessionEditorPage({
             <h2 className="text-sm font-medium text-text">Spotify</h2>
             {spotifyConnected ? (
               <>
-                <p className="mt-2 text-xs text-sage-strong">Connected</p>
+                <p className="mt-2 text-xs text-sage-strong">
+                  Connected{spotifyDisplayName ? ` as ${spotifyDisplayName}` : ""}
+                </p>
                 {topArtists.length > 0 && (
                   <div className="mt-3">
-                    <div className="text-[11px] text-text-muted">Your top artists</div>
+                    <div className="text-[11px] text-text-muted">
+                      Your top artists — tap one to search its tracks
+                    </div>
                     <div className="mt-1.5 flex flex-wrap gap-1.5">
                       {topArtists.map((a) => (
-                        <span
+                        <button
                           key={a.id}
-                          className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-text"
+                          type="button"
+                          onClick={() => seedSearchFromArtist(a.name)}
+                          className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-text hover:bg-primary hover:text-white"
                         >
                           {a.name}
-                        </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {topGenres.length > 0 && (
+                  <div className="mt-3">
+                    <div className="text-[11px] text-text-muted">
+                      Your top genres — tap one to search its tracks
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {topGenres.map((genre) => (
+                        <button
+                          key={genre}
+                          type="button"
+                          onClick={() => seedSearchFromGenre(genre)}
+                          className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-text hover:bg-primary hover:text-white"
+                        >
+                          {genre}
+                        </button>
                       ))}
                     </div>
                   </div>

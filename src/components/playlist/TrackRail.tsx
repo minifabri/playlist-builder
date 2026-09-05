@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { energyLabel } from "@/domain/energy";
 import type { EnergyCurve } from "@/domain/energy/types";
 import {
@@ -13,10 +13,15 @@ import type { DraftTrack } from "@/domain/playlist/types";
 import { Button } from "@/components/ui/Button";
 import type { TrackSummary } from "@/integrations/spotify/types";
 
+export type SearchSeed = { query: string; nonce: number };
+
 type Props = {
   order: DraftTrack[];
   curve: EnergyCurve;
   connected: boolean;
+  /** Set by the parent when a top artist/genre chip is clicked, to run a
+   * search here without lifting the whole search UI up. */
+  seed?: SearchSeed | null;
   onChange: (order: DraftTrack[]) => void;
 };
 
@@ -27,11 +32,30 @@ function formatMs(ms: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function TrackRail({ order, curve, connected, onChange }: Props) {
+/** Spotify's official embed player — no API token needed, works for any
+ * listener (30s preview for free accounts, full playback for Premium).
+ * This is the supported replacement now that track.preview_url is no
+ * longer reliably returned by the Web API. */
+function SpotifyPreviewEmbed({ trackId }: { trackId: string }) {
+  return (
+    <iframe
+      title={`Spotify preview ${trackId}`}
+      src={`https://open.spotify.com/embed/track/${trackId}?utm_source=generator`}
+      width="100%"
+      height="80"
+      style={{ borderRadius: 12, border: 0 }}
+      allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+      loading="lazy"
+    />
+  );
+}
+
+export function TrackRail({ order, curve, connected, seed, onChange }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<TrackSummary[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [previewTrackId, setPreviewTrackId] = useState<string | null>(null);
 
   const placements = calculatePlacements(order, curve);
   const totalMs = totalDurationMs(order);
@@ -99,13 +123,14 @@ export function TrackRail({ order, curve, connected, onChange }: Props) {
     ]);
   }
 
-  async function runSearch(e: FormEvent) {
-    e.preventDefault();
-    if (!query.trim()) return;
+  async function performSearch(searchQuery: string) {
+    if (!searchQuery.trim()) return;
     setSearching(true);
     setSearchError(null);
     try {
-      const res = await fetch(`/api/music/search/tracks?q=${encodeURIComponent(query)}`);
+      const res = await fetch(
+        `/api/music/search/tracks?q=${encodeURIComponent(searchQuery)}`,
+      );
       const data = await res.json();
       if (!res.ok) {
         setSearchError(
@@ -122,6 +147,29 @@ export function TrackRail({ order, curve, connected, onChange }: Props) {
     } finally {
       setSearching(false);
     }
+  }
+
+  function runSearch(e: FormEvent) {
+    e.preventDefault();
+    performSearch(query);
+  }
+
+  // Runs a search when a top artist/genre chip is clicked in the parent
+  // panel. The nonce lets the same chip be clicked twice in a row.
+  useEffect(() => {
+    if (!seed) return;
+    // Syncing the search box to a signal from the parent (an artist/genre
+    // chip click) — the sanctioned "respond to an external trigger"
+    // useEffect pattern, gated on seed.nonce so re-clicking the same chip
+    // still re-runs the search.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setQuery(seed.query);
+    performSearch(seed.query);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed?.nonce]);
+
+  function togglePreview(trackId: string) {
+    setPreviewTrackId((current) => (current === trackId ? null : trackId));
   }
 
   return (
@@ -168,71 +216,87 @@ export function TrackRail({ order, curve, connected, onChange }: Props) {
         {placements.map((p, index) => {
           const track = order[index];
           if (!track) return null;
+          const isPreviewOpen = previewTrackId === track.id;
           return (
-            <li
-              key={`${p.trackId}-${index}`}
-              className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm"
-            >
-              <div className="min-w-[10ch] text-text-muted text-xs tabular-nums">
-                {formatMs(p.startMs)}
-              </div>
-              <div className="flex-1 min-w-[10rem]">
-                <div className="font-medium text-text">
-                  {track.title}
-                  {track.source === "spotify" && (
-                    <span
-                      className="ml-1.5 rounded-full bg-sage-soft px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-sage-strong align-middle"
-                      title="Real Spotify track — exportable"
-                    >
-                      Spotify
-                    </span>
-                  )}
+            <li key={`${p.trackId}-${index}`} className="px-4 py-3 text-sm">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="min-w-[10ch] text-text-muted text-xs tabular-nums">
+                  {formatMs(p.startMs)}
                 </div>
-                <div className="text-xs text-text-muted">{track.artist}</div>
+                <div className="flex-1 min-w-[10rem]">
+                  <div className="font-medium text-text">
+                    {track.title}
+                    {track.source === "spotify" && (
+                      <span
+                        className="ml-1.5 rounded-full bg-sage-soft px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-sage-strong align-middle"
+                        title="Real Spotify track — exportable"
+                      >
+                        Spotify
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-text-muted">{track.artist}</div>
+                </div>
+                <div className="text-xs text-text-muted min-w-[6ch] tabular-nums">
+                  {formatMs(track.durationMs)}
+                </div>
+                <div className="text-xs text-text-muted min-w-[9rem]">
+                  target {Math.round(p.targetEnergy)} · fits {energyLabel(p.targetEnergy)}
+                </div>
+                <div className="flex items-center gap-1">
+                  {track.source === "spotify" && (
+                    <button
+                      type="button"
+                      onClick={() => togglePreview(track.id)}
+                      aria-pressed={isPreviewOpen}
+                      aria-label={isPreviewOpen ? "Hide preview" : "Preview track"}
+                      className={`h-8 w-8 rounded-[var(--radius-control)] hover:bg-surface-subtle ${isPreviewOpen ? "text-primary" : "text-text-muted"}`}
+                    >
+                      {isPreviewOpen ? "◼" : "▶"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => move(index, -1)}
+                    disabled={index === 0}
+                    aria-label="Move earlier"
+                    className="h-8 w-8 rounded-[var(--radius-control)] text-text-muted hover:bg-surface-subtle disabled:opacity-30"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => move(index, 1)}
+                    disabled={index === placements.length - 1}
+                    aria-label="Move later"
+                    className="h-8 w-8 rounded-[var(--radius-control)] text-text-muted hover:bg-surface-subtle disabled:opacity-30"
+                  >
+                    ↓
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleLock(index)}
+                    aria-pressed={p.locked}
+                    aria-label={p.locked ? "Unlock track" : "Lock track"}
+                    className={`h-8 w-8 rounded-[var(--radius-control)] hover:bg-surface-subtle ${p.locked ? "text-gold" : "text-text-muted"}`}
+                  >
+                    {p.locked ? "🔒" : "🔓"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => remove(index)}
+                    aria-label="Remove track"
+                    className="h-8 w-8 rounded-[var(--radius-control)] text-danger hover:bg-danger/10"
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
-              <div className="text-xs text-text-muted min-w-[6ch] tabular-nums">
-                {formatMs(track.durationMs)}
-              </div>
-              <div className="text-xs text-text-muted min-w-[9rem]">
-                target {Math.round(p.targetEnergy)} · fits {energyLabel(p.targetEnergy)}
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => move(index, -1)}
-                  disabled={index === 0}
-                  aria-label="Move earlier"
-                  className="h-8 w-8 rounded-[var(--radius-control)] text-text-muted hover:bg-surface-subtle disabled:opacity-30"
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  onClick={() => move(index, 1)}
-                  disabled={index === placements.length - 1}
-                  aria-label="Move later"
-                  className="h-8 w-8 rounded-[var(--radius-control)] text-text-muted hover:bg-surface-subtle disabled:opacity-30"
-                >
-                  ↓
-                </button>
-                <button
-                  type="button"
-                  onClick={() => toggleLock(index)}
-                  aria-pressed={p.locked}
-                  aria-label={p.locked ? "Unlock track" : "Lock track"}
-                  className={`h-8 w-8 rounded-[var(--radius-control)] hover:bg-surface-subtle ${p.locked ? "text-gold" : "text-text-muted"}`}
-                >
-                  {p.locked ? "🔒" : "🔓"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => remove(index)}
-                  aria-label="Remove track"
-                  className="h-8 w-8 rounded-[var(--radius-control)] text-danger hover:bg-danger/10"
-                >
-                  ✕
-                </button>
-              </div>
+              {isPreviewOpen && (
+                <div className="mt-2">
+                  <SpotifyPreviewEmbed trackId={track.id} />
+                </div>
+              )}
             </li>
           );
         })}
@@ -241,8 +305,9 @@ export function TrackRail({ order, curve, connected, onChange }: Props) {
       {order.length > 0 && (
         <p className="text-[11px] text-text-muted">
           {exportableCount} of {order.length} track{order.length === 1 ? "" : "s"} can be
-          exported to Spotify (search below to add real tracks — sample tracks can&apos;t be
-          exported).
+          exported to Spotify. Sample tracks are a small built-in demo pool used to test
+          the energy fit — they are not related to your Spotify taste and can&apos;t be
+          exported; search below to add real tracks instead.
         </p>
       )}
 
@@ -258,7 +323,7 @@ export function TrackRail({ order, curve, connected, onChange }: Props) {
             aria-label="Add a sample track"
           >
             <option value="" disabled>
-              Add a sample track…
+              Add a sample track (demo only, not your taste)…
             </option>
             {availableMockTracks.map((t) => (
               <option key={t.id} value={t.id}>
@@ -292,27 +357,48 @@ export function TrackRail({ order, curve, connected, onChange }: Props) {
             </form>
             {searchError && <p className="mt-2 text-xs text-danger">{searchError}</p>}
             {results.length > 0 && (
-              <ul className="mt-2 max-h-56 space-y-1 overflow-y-auto">
-                {results.map((t) => (
-                  <li
-                    key={t.id}
-                    className="flex items-center justify-between gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-xs hover:bg-surface-subtle"
-                  >
-                    <span className="truncate">
-                      <span className="font-medium text-text">{t.title}</span>{" "}
-                      <span className="text-text-muted">
-                        — {t.artist} ({formatMs(t.durationMs)})
-                      </span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => addSpotifyTrack(t)}
-                      className="shrink-0 rounded-full bg-primary px-2 py-1 text-[10px] font-medium text-white hover:opacity-90"
+              <ul className="mt-2 max-h-72 space-y-1 overflow-y-auto">
+                {results.map((t) => {
+                  const isResultPreviewOpen = previewTrackId === t.id;
+                  return (
+                    <li
+                      key={t.id}
+                      className="rounded-[var(--radius-control)] px-2 py-1.5 text-xs hover:bg-surface-subtle"
                     >
-                      + Add
-                    </button>
-                  </li>
-                ))}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate">
+                          <span className="font-medium text-text">{t.title}</span>{" "}
+                          <span className="text-text-muted">
+                            — {t.artist} ({formatMs(t.durationMs)})
+                          </span>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => togglePreview(t.id)}
+                            aria-pressed={isResultPreviewOpen}
+                            aria-label={isResultPreviewOpen ? "Hide preview" : "Preview track"}
+                            className={`h-6 w-6 rounded-full hover:bg-surface ${isResultPreviewOpen ? "text-primary" : "text-text-muted"}`}
+                          >
+                            {isResultPreviewOpen ? "◼" : "▶"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => addSpotifyTrack(t)}
+                            className="rounded-full bg-primary px-2 py-1 text-[10px] font-medium text-white hover:opacity-90"
+                          >
+                            + Add
+                          </button>
+                        </span>
+                      </div>
+                      {isResultPreviewOpen && (
+                        <div className="mt-1.5">
+                          <SpotifyPreviewEmbed trackId={t.id} />
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </>
