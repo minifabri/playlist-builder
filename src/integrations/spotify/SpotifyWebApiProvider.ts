@@ -5,6 +5,8 @@ import type {
   CreatePlaylistInput,
   Page,
   SpotifyPlaylist,
+  SpotifyPlaylistDetails,
+  SpotifyPlaylistSummary,
   SpotifyUser,
   TopItemParams,
   TrackSummary,
@@ -18,6 +20,13 @@ const API_BASE = "https://api.spotify.com/v1";
  */
 const MAX_SEARCH_LIMIT = 10;
 const MAX_TOP_ITEMS_LIMIT = 20;
+/**
+ * No Development Mode restriction is documented for playlist listing/item
+ * endpoints specifically (only /search — see MAX_SEARCH_LIMIT above), so
+ * these use Spotify's ordinary page sizes rather than the search cap.
+ */
+const MAX_USER_PLAYLISTS_LIMIT = 50;
+const MAX_PLAYLIST_ITEMS_LIMIT = 50;
 
 type RawArtist = {
   id: string;
@@ -33,7 +42,30 @@ type RawTrack = {
   duration_ms: number;
   artists?: { name: string }[];
   album?: { images?: { url: string }[] };
+  popularity?: number;
+  explicit?: boolean;
 };
+
+type RawPlaylistSummary = {
+  id: string;
+  name: string;
+  owner?: { id?: string };
+  images?: { url: string }[];
+  tracks?: { total?: number };
+};
+
+type RawPlaylistDetails = {
+  id: string;
+  name: string;
+  description?: string | null;
+  owner?: { id?: string };
+  collaborative?: boolean;
+  tracks?: { total?: number };
+};
+
+/** A playlist item's `track` field is null for a removed track, and local
+ * files carry no usable `id`/`uri` — both are skipped on import. */
+type RawPlaylistItem = { track: RawTrack | null };
 
 function toArtistSummary(raw: RawArtist): ArtistSummary {
   return {
@@ -52,6 +84,8 @@ function toTrackSummary(raw: RawTrack): TrackSummary {
     artist: raw.artists?.map((a) => a.name).join(", ") ?? "Unknown artist",
     durationMs: raw.duration_ms,
     imageUrl: raw.album?.images?.[0]?.url ?? null,
+    popularity: raw.popularity ?? 0,
+    explicit: raw.explicit ?? false,
   };
 }
 
@@ -199,6 +233,77 @@ export class SpotifyWebApiProvider implements SpotifyProvider {
       method: "POST",
       body: JSON.stringify({ uris }),
     });
+  }
+
+  async getUserPlaylists(
+    accessToken: string,
+    offset = 0,
+  ): Promise<Page<SpotifyPlaylistSummary>> {
+    const limit = MAX_USER_PLAYLISTS_LIMIT;
+    const res = await spotifyFetch(
+      accessToken,
+      `/me/playlists?limit=${limit}&offset=${offset}`,
+    );
+    const raw = (await res.json()) as { items: RawPlaylistSummary[]; total: number };
+    const items = raw.items.map((p) => ({
+      id: p.id,
+      name: p.name,
+      ownerId: p.owner?.id ?? "",
+      trackCount: p.tracks?.total ?? 0,
+      imageUrl: p.images?.[0]?.url ?? null,
+    }));
+    return {
+      items,
+      offset,
+      limit,
+      total: raw.total,
+      hasMore: offset + items.length < raw.total,
+    };
+  }
+
+  async getPlaylist(accessToken: string, playlistId: string): Promise<SpotifyPlaylistDetails> {
+    const res = await spotifyFetch(
+      accessToken,
+      `/playlists/${playlistId}?fields=id,name,description,owner(id),collaborative,tracks(total)`,
+    );
+    const raw = (await res.json()) as RawPlaylistDetails;
+    return {
+      id: raw.id,
+      name: raw.name,
+      description: raw.description ?? null,
+      ownerId: raw.owner?.id ?? "",
+      collaborative: raw.collaborative ?? false,
+      trackCount: raw.tracks?.total ?? 0,
+    };
+  }
+
+  async getPlaylistItems(
+    accessToken: string,
+    playlistId: string,
+    offset = 0,
+  ): Promise<Page<TrackSummary>> {
+    // 08_SPOTIFY_INTEGRATION.md — "the 2026 API uses /items terminology for
+    // add/get/remove/update"; do not build new code around /tracks.
+    const limit = MAX_PLAYLIST_ITEMS_LIMIT;
+    const res = await spotifyFetch(
+      accessToken,
+      `/playlists/${playlistId}/items?limit=${limit}&offset=${offset}` +
+        `&fields=items(track(id,uri,name,duration_ms,artists(name),album(images),popularity,explicit)),total`,
+    );
+    const raw = (await res.json()) as { items: RawPlaylistItem[]; total: number };
+    const items = raw.items
+      .filter((it): it is { track: RawTrack } => Boolean(it.track?.id && it.track?.uri))
+      .map((it) => toTrackSummary(it.track));
+    return {
+      items,
+      offset,
+      limit,
+      total: raw.total,
+      // Advance by the raw (unfiltered) page size, not the filtered item
+      // count, so pagination doesn't stall on a page full of removed
+      // tracks/local files.
+      hasMore: offset + raw.items.length < raw.total,
+    };
   }
 }
 

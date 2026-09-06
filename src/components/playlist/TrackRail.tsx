@@ -15,6 +15,7 @@ import {
   rankByFamiliarity,
 } from "@/domain/playlist/moodSuggestions";
 import { refitOrderToCurve } from "@/domain/playlist/refitOrderToCurve";
+import { filterTracks, type TrackFilters } from "@/domain/playlist/trackFilters";
 import type { DraftTrack } from "@/domain/playlist/types";
 import { Button } from "@/components/ui/Button";
 import type { TrackSummary } from "@/integrations/spotify/types";
@@ -35,6 +36,9 @@ type Props = {
   /** The Music Intent dials (Discovery↔Familiar, Instrumental↔Vocal,
    * Organic↔Electronic, Soft↔Driving) — feed "Suggested for you". */
   musicIntent: MusicIntent;
+  /** Hard duration/popularity/explicit filters — tracks that don't pass
+   * are dropped from "Suggested for you" entirely (not just re-ranked). */
+  filters?: TrackFilters;
   /** The teacher's real Spotify top artist names, used only to rank
    * "Suggested for you" results toward/away from names she knows
    * (Discovery↔Familiar) — never to fetch anything. */
@@ -127,6 +131,7 @@ export function TrackRail({
   preferredGenres = [],
   excludedGenres = [],
   musicIntent,
+  filters = {},
   topArtistNames = [],
   seed,
   onChange,
@@ -167,6 +172,7 @@ export function TrackRail({
   const excludedGenresKey = excludedGenres.join("|");
   const musicIntentKey = `${musicIntent.organicElectronic}|${musicIntent.vocals}|${musicIntent.drive}|${musicIntent.familiarity}`;
   const topArtistNamesKey = topArtistNames.join("|");
+  const filtersKey = `${filters.minDurationSec ?? 0}|${filters.maxDurationSec ?? 0}|${filters.minPopularity ?? 0}|${filters.excludeExplicit ?? false}`;
 
   function move(index: number, direction: -1 | 1) {
     const target = index + direction;
@@ -213,7 +219,9 @@ export function TrackRail({
 
   function rateTrackEnergy(index: number, label: string) {
     const next = order.map((entry, i) =>
-      i === index ? { ...entry, energyEstimate: energyLabelMidpoint(label) } : entry,
+      i === index
+        ? { ...entry, energyEstimate: energyLabelMidpoint(label), estimated: false }
+        : entry,
     );
     onChange(next);
   }
@@ -336,11 +344,8 @@ export function TrackRail({
           );
           setSuggestions([]);
         } else {
-          const ranked = rankByFamiliarity(
-            (data.items ?? []) as TrackSummary[],
-            topArtistNames,
-            musicIntent.familiarity,
-          );
+          const filtered = filterTracks((data.items ?? []) as TrackSummary[], filters);
+          const ranked = rankByFamiliarity(filtered, topArtistNames, musicIntent.familiarity);
           setSuggestions(ranked.slice(0, 6));
         }
       } catch {
@@ -359,6 +364,7 @@ export function TrackRail({
     preferredGenresKey,
     excludedGenresKey,
     musicIntentKey,
+    filtersKey,
     topArtistNamesKey,
     suggestRotation,
     draftIsFull,
@@ -477,6 +483,14 @@ export function TrackRail({
                         Spotify
                       </span>
                     )}
+                    {track.origin && (
+                      <span
+                        className="ml-1.5 rounded-full bg-surface-subtle px-1.5 py-0.5 text-[9px] font-medium text-text-muted align-middle"
+                        title={`Kept from the imported playlist "${track.origin.playlistName}" — reorder, replace, or remove it like any other track.`}
+                      >
+                        from {track.origin.playlistName}
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-text-muted">{track.artist}</div>
                 </div>
@@ -496,23 +510,33 @@ export function TrackRail({
                       </span>
                     )}
                   </div>
-                  <select
-                    value={trackLabel}
-                    onChange={(e) => rateTrackEnergy(index, e.target.value)}
-                    aria-label={`Your energy rating for ${track.title}`}
-                    title={
-                      track.source === "spotify"
-                        ? "Spotify doesn't tell us how energetic a track feels (that data isn't available to new apps) — rate it yourself so the match check and \"Fit to curve\" can use it."
-                        : "Adjust this sample track's energy rating."
-                    }
-                    className="mt-1 h-6 rounded border border-border bg-surface px-1 text-[10px] text-text"
-                  >
-                    {ENERGY_LABEL_ORDER.map((label) => (
-                      <option key={label} value={label}>
-                        rated: {label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="mt-1 flex items-center gap-1">
+                    <select
+                      value={trackLabel}
+                      onChange={(e) => rateTrackEnergy(index, e.target.value)}
+                      aria-label={`Your energy rating for ${track.title}`}
+                      title={
+                        track.source === "spotify"
+                          ? "Spotify doesn't tell us how energetic a track feels (that data isn't available to new apps) — rate it yourself so the match check and \"Fit to curve\" can use it."
+                          : "Adjust this sample track's energy rating."
+                      }
+                      className="h-6 rounded border border-border bg-surface px-1 text-[10px] text-text"
+                    >
+                      {ENERGY_LABEL_ORDER.map((label) => (
+                        <option key={label} value={label}>
+                          rated: {label}
+                        </option>
+                      ))}
+                    </select>
+                    {track.estimated && (
+                      <span
+                        className="text-[9px] text-text-muted"
+                        title="Estimated when this playlist was imported — not yet rated by you."
+                      >
+                        (estimated)
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-1">
                   {track.source === "spotify" && (
@@ -627,6 +651,12 @@ export function TrackRail({
             {suggesting && <p className="mt-2 text-xs text-text-muted">Loading…</p>}
             {suggestionError && (
               <p className="mt-2 text-xs text-danger">{suggestionError}</p>
+            )}
+            {suggestGenre && !suggesting && !suggestionError && suggestions.length === 0 && (
+              <p className="mt-2 text-xs text-text-muted">
+                Nothing from this search passed your track filters — tap 🔄 Shuffle to
+                try a different pick, or loosen the filters.
+              </p>
             )}
             {!suggesting && suggestions.length > 0 && (
               <ul className="mt-2 space-y-1">

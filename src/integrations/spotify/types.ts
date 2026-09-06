@@ -24,6 +24,11 @@ export type TrackSummary = {
   artist: string;
   durationMs: number;
   imageUrl: string | null;
+  /** Spotify's own 0-100 popularity score — a real field on the track
+   * object itself (search/top-tracks), not an Audio Features signal. */
+  popularity: number;
+  /** Spotify's own explicit-content flag, also a plain track field. */
+  explicit: boolean;
 };
 
 export type Page<T> = {
@@ -49,6 +54,29 @@ export type SpotifyPlaylist = {
   id: string;
   name: string;
   url: string;
+};
+
+/** A row in the current user's own playlist list — the "Import a playlist"
+ * picker (05_PLAYLIST_RESHAPE.md — "Entry point / IA"). */
+export type SpotifyPlaylistSummary = {
+  id: string;
+  name: string;
+  ownerId: string;
+  trackCount: number;
+  imageUrl: string | null;
+};
+
+/** Metadata for one playlist being imported, resolved separately from its
+ * track items so ownership/ "readable at all" can be checked before
+ * paging through items (05_PLAYLIST_RESHAPE.md — "Spotify integration
+ * requirements"). */
+export type SpotifyPlaylistDetails = {
+  id: string;
+  name: string;
+  description: string | null;
+  ownerId: string;
+  collaborative: boolean;
+  trackCount: number;
 };
 
 /**

@@ -13,6 +13,14 @@ export type EnergyPoint = {
   energy: number; // 0..100
   label?: string;
   locked?: boolean;
+  /**
+   * True when this point's energy was inferred rather than grounded in a
+   * known rating — e.g. built from an imported playlist's tracks that have
+   * no prior teacher energy override (05_PLAYLIST_RESHAPE.md — "Curve
+   * inference algorithm"). A quiet visual distinction only, never a
+   * fabricated confidence number.
+   */
+  estimated?: boolean;
 };
 
 export type PhaseKind =
@@ -45,6 +53,7 @@ export type NormalizedEnergyPoint = {
   x: number; // 0..1
   energy: number;
   label?: string;
+  estimated?: boolean;
 };
 
 export type NormalizedPhase = {
