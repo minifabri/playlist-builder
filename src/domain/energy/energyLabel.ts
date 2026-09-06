@@ -18,6 +18,19 @@ export function energyLabel(energy: number): string {
 /** The five labels in energy order, lowest to highest. */
 export const ENERGY_LABEL_ORDER: string[] = ENERGY_LABELS.map((b) => b.label);
 
+export type EnergyZone = { label: string; min: number; max: number };
+
+/**
+ * The five qualitative bands as min/max ranges, derived from ENERGY_LABELS
+ * so the boundaries can't drift out of sync with `energyLabel`/
+ * `energyLabelMidpoint`.
+ */
+export const ENERGY_ZONES: EnergyZone[] = ENERGY_LABELS.map((band, index) => ({
+  label: band.label,
+  min: index === 0 ? 0 : ENERGY_LABELS[index - 1].max,
+  max: band.max,
+}));
+
 /**
  * The midpoint energy value of a qualitative band — used when a person
  * (not Spotify — see 08_SPOTIFY_INTEGRATION.md, Audio Features are
