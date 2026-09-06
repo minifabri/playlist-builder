@@ -24,6 +24,11 @@ export type TrackSummary = {
   artist: string;
   durationMs: number;
   imageUrl: string | null;
+  /** Spotify's own 0-100 popularity score — a real field on the track
+   * object itself (search/top-tracks), not an Audio Features signal. */
+  popularity: number;
+  /** Spotify's own explicit-content flag, also a plain track field. */
+  explicit: boolean;
 };
 
 export type Page<T> = {

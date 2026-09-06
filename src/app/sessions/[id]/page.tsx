@@ -22,6 +22,7 @@ import {
   pickMoodSuggestionSeed,
   rankByFamiliarity,
 } from "@/domain/playlist/moodSuggestions";
+import { filterTracks, type TrackFilters } from "@/domain/playlist/trackFilters";
 import type { ArtistSummary, TrackSummary } from "@/integrations/spotify/types";
 
 const AUTOSAVE_DELAY_MS = 700;
@@ -67,6 +68,7 @@ export default function SessionEditorPage({
   const [searchSeed, setSearchSeed] = useState<SearchSeed | null>(null);
   const [preferredGenres, setPreferredGenres] = useState<string[]>([]);
   const [excludedGenres, setExcludedGenres] = useState<string[]>([]);
+  const [trackFilters, setTrackFilters] = useState<TrackFilters>({});
   const [discoveredArtists, setDiscoveredArtists] = useState<ArtistSummary[]>([]);
   const [discoveringArtists, setDiscoveringArtists] = useState(false);
   const [discoverArtistsError, setDiscoverArtistsError] = useState<string | null>(null);
@@ -98,8 +100,25 @@ export default function SessionEditorPage({
       } catch {
         // ignore
       }
+      try {
+        const rawFilters = window.localStorage.getItem(`ima-yoga-track-filters-${id}`);
+        if (rawFilters) setTrackFilters(JSON.parse(rawFilters) as TrackFilters);
+      } catch {
+        // ignore
+      }
     }
   }, [id]);
+
+  function updateTrackFilters(patch: Partial<TrackFilters>) {
+    const next = { ...trackFilters, ...patch };
+    setTrackFilters(next);
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(`ima-yoga-track-filters-${id}`, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }
 
   function saveGenrePrefs(nextPreferred: string[], nextExcluded: string[]) {
     if (typeof window === "undefined") return;
@@ -410,7 +429,7 @@ export default function SessionEditorPage({
               genreOffsets.set(seedPick.genre, offset + candidates.length);
             }
             const ranked = rankByFamiliarity(
-              candidates,
+              filterTracks(candidates, trackFilters),
               topArtistNames,
               session.musicIntent.familiarity,
             );
@@ -775,6 +794,7 @@ export default function SessionEditorPage({
               preferredGenres={preferredGenres}
               excludedGenres={excludedGenres}
               musicIntent={session.musicIntent}
+              filters={trackFilters}
               topArtistNames={topArtists.map((a) => a.name)}
               onChange={updateOrder}
             />
@@ -992,6 +1012,61 @@ export default function SessionEditorPage({
                   updateSession({ musicIntent: { ...session.musicIntent, drive: v } })
                 }
               />
+            </div>
+          </section>
+
+          <section className="rounded-[var(--radius-panel)] border border-border bg-surface p-5">
+            <h2 className="text-sm font-medium text-text">Track filters</h2>
+            <p className="mt-1 text-[11px] text-text-muted">
+              Hard filters for &quot;Generate playlist&quot; and &quot;Suggested for
+              you&quot; — a track that doesn&apos;t pass is dropped, not just re-ranked.
+              Based on real Spotify track fields (duration, popularity, explicit flag);
+              there&apos;s no reliable way to filter for instrumental-only, since that
+              would need Audio Features data Spotify doesn&apos;t expose to new apps.
+            </p>
+            <div className="mt-4 space-y-4">
+              <label className="block">
+                <span className="text-xs text-text-muted">
+                  Minimum track length (seconds) — cuts short interludes/snippets
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  step={5}
+                  value={trackFilters.minDurationSec ?? 0}
+                  onChange={(e) =>
+                    updateTrackFilters({ minDurationSec: Math.max(0, Number(e.target.value)) })
+                  }
+                  className="mt-1 h-9 w-24 rounded-[var(--radius-control)] border border-border bg-surface px-2 text-sm text-text"
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-text-muted">
+                  Minimum popularity (0-100, Spotify&apos;s own score) — 0 means no filter
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={trackFilters.minPopularity ?? 0}
+                  onChange={(e) =>
+                    updateTrackFilters({ minPopularity: Number(e.target.value) })
+                  }
+                  className="mt-1 w-full accent-primary"
+                />
+                <span className="text-[11px] text-text-muted">
+                  {trackFilters.minPopularity ?? 0}
+                </span>
+              </label>
+              <label className="flex items-center gap-2 text-xs text-text">
+                <input
+                  type="checkbox"
+                  checked={trackFilters.excludeExplicit ?? false}
+                  onChange={(e) => updateTrackFilters({ excludeExplicit: e.target.checked })}
+                  className="accent-primary"
+                />
+                Exclude tracks flagged explicit
+              </label>
             </div>
           </section>
         </aside>

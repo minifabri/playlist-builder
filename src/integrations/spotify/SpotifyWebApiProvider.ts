@@ -42,6 +42,8 @@ type RawTrack = {
   duration_ms: number;
   artists?: { name: string }[];
   album?: { images?: { url: string }[] };
+  popularity?: number;
+  explicit?: boolean;
 };
 
 type RawPlaylistSummary = {
@@ -82,6 +84,8 @@ function toTrackSummary(raw: RawTrack): TrackSummary {
     artist: raw.artists?.map((a) => a.name).join(", ") ?? "Unknown artist",
     durationMs: raw.duration_ms,
     imageUrl: raw.album?.images?.[0]?.url ?? null,
+    popularity: raw.popularity ?? 0,
+    explicit: raw.explicit ?? false,
   };
 }
 
@@ -284,7 +288,7 @@ export class SpotifyWebApiProvider implements SpotifyProvider {
     const res = await spotifyFetch(
       accessToken,
       `/playlists/${playlistId}/items?limit=${limit}&offset=${offset}` +
-        `&fields=items(track(id,uri,name,duration_ms,artists(name),album(images))),total`,
+        `&fields=items(track(id,uri,name,duration_ms,artists(name),album(images),popularity,explicit)),total`,
     );
     const raw = (await res.json()) as { items: RawPlaylistItem[]; total: number };
     const items = raw.items
