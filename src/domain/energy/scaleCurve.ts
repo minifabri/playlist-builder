@@ -12,12 +12,18 @@ import type {
  */
 export function normalizeCurve(curve: EnergyCurve): NormalizedEnergyPoint[] {
   if (curve.durationSec <= 0) {
-    return curve.points.map((p) => ({ x: 0, energy: p.energy, label: p.label }));
+    return curve.points.map((p) => ({
+      x: 0,
+      energy: p.energy,
+      label: p.label,
+      estimated: p.estimated,
+    }));
   }
   return curve.points.map((p) => ({
     x: p.timeSec / curve.durationSec,
     energy: p.energy,
     label: p.label,
+    estimated: p.estimated,
   }));
 }
 
@@ -41,6 +47,7 @@ export function applyCurveToDuration(
     timeSec: Math.round(p.x * durationSec),
     energy: p.energy,
     label: p.label,
+    estimated: p.estimated,
   }));
 
   // Guard the invariant that first/last points sit exactly at the edges,

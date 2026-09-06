@@ -345,7 +345,7 @@ export function EnergyCurveEditor({
               transform={`translate(${xScale(point.timeSec)}, ${yScale(point.energy)})`}
               tabIndex={0}
               role="slider"
-              aria-label={`Energy point at ${Math.round(point.timeSec / 60)} minutes, energy ${Math.round(point.energy)} (${energyLabel(point.energy)})`}
+              aria-label={`Energy point at ${Math.round(point.timeSec / 60)} minutes, energy ${Math.round(point.energy)} (${energyLabel(point.energy)})${point.estimated ? " — estimated" : ""}`}
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={Math.round(point.energy)}
@@ -354,11 +354,13 @@ export function EnergyCurveEditor({
               onFocus={() => setSelectedId(point.id)}
               className="cursor-grab outline-none active:cursor-grabbing"
             >
+              {point.estimated && <title>Estimated — not yet rated by you</title>}
               {isSelected && (
                 <circle r={11} className="fill-primary/20" />
               )}
               <circle
                 r={6}
+                strokeDasharray={point.estimated ? "2 2" : undefined}
                 className={
                   isSelected
                     ? "fill-primary stroke-white stroke-2"

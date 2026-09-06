@@ -3,6 +3,8 @@ import type {
   CreatePlaylistInput,
   Page,
   SpotifyPlaylist,
+  SpotifyPlaylistDetails,
+  SpotifyPlaylistSummary,
   SpotifyUser,
   TopItemParams,
   TrackSummary,
@@ -41,4 +43,17 @@ export interface SpotifyProvider {
     playlistId: string,
     uris: string[],
   ): Promise<void>;
+  /** The current user's own playlists — the "Import a playlist" picker's
+   * primary source (05_PLAYLIST_RESHAPE.md — "Entry point / IA"). */
+  getUserPlaylists(accessToken: string, offset?: number): Promise<Page<SpotifyPlaylistSummary>>;
+  /** Playlist metadata only (no tracks) — resolved first so ownership and
+   * readability can be checked before paging through items. */
+  getPlaylist(accessToken: string, playlistId: string): Promise<SpotifyPlaylistDetails>;
+  /** A page of a playlist's own tracks, in order
+   * (05_PLAYLIST_RESHAPE.md — "Adapter method": getPlaylistItems). */
+  getPlaylistItems(
+    accessToken: string,
+    playlistId: string,
+    offset?: number,
+  ): Promise<Page<TrackSummary>>;
 }

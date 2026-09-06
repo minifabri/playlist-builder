@@ -59,4 +59,19 @@ export type DraftTrack = {
   energyEstimate: number;
   vocalsLevel: number; // 0 instrumental .. 100 vocal
   locked: boolean;
+  /**
+   * True when energyEstimate is a guess (neutral default) rather than a
+   * rating the teacher actually gave — set on tracks seeded from a
+   * playlist import that have no prior energy override
+   * (05_PLAYLIST_RESHAPE.md — "Curve inference algorithm"). Cleared as
+   * soon as the teacher rates the track herself (rateTrackEnergy).
+   */
+  estimated?: boolean;
+  /**
+   * Set on tracks seeded from a playlist import, so the draft can show a
+   * "from {playlist name}" origin tag until the teacher removes/replaces
+   * the track (05_PLAYLIST_RESHAPE.md — "UX behavior for imported
+   * sessions"). Not cleared automatically by edits other than removal.
+   */
+  origin?: { importId: string; playlistName: string };
 };
