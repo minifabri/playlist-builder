@@ -63,9 +63,12 @@ type RawPlaylistDetails = {
   tracks?: { total?: number };
 };
 
-/** A playlist item's `track` field is null for a removed track, and local
- * files carry no usable `id`/`uri` — both are skipped on import. */
-type RawPlaylistItem = { track: RawTrack | null };
+/** A playlist item's `item` field is null for a removed track, and local
+ * files carry no usable `id`/`uri` — both are skipped on import. `track` is
+ * the deprecated alias for the same data (Spotify docs: "Deprecated: Use
+ * 'item' instead") — the fields projection below must request `item(...)`,
+ * not `track(...)`, or the API returns items with no populated data at all. */
+type RawPlaylistItem = { item: RawTrack | null };
 
 function toArtistSummary(raw: RawArtist): ArtistSummary {
   return {
@@ -283,17 +286,20 @@ export class SpotifyWebApiProvider implements SpotifyProvider {
     offset = 0,
   ): Promise<Page<TrackSummary>> {
     // 08_SPOTIFY_INTEGRATION.md — "the 2026 API uses /items terminology for
-    // add/get/remove/update"; do not build new code around /tracks.
+    // add/get/remove/update"; do not build new code around /tracks. The
+    // fields projection must name the current `item` field, not the
+    // deprecated `track` alias — projecting `track(...)` returns items with
+    // no populated data at all, which silently empties every import.
     const limit = MAX_PLAYLIST_ITEMS_LIMIT;
     const res = await spotifyFetch(
       accessToken,
       `/playlists/${playlistId}/items?limit=${limit}&offset=${offset}` +
-        `&fields=items(track(id,uri,name,duration_ms,artists(name),album(images),popularity,explicit)),total`,
+        `&fields=items(item(id,uri,name,duration_ms,artists(name),album(images),popularity,explicit)),total`,
     );
     const raw = (await res.json()) as { items: RawPlaylistItem[]; total: number };
     const items = raw.items
-      .filter((it): it is { track: RawTrack } => Boolean(it.track?.id && it.track?.uri))
-      .map((it) => toTrackSummary(it.track));
+      .filter((it): it is { item: RawTrack } => Boolean(it.item?.id && it.item?.uri))
+      .map((it) => toTrackSummary(it.item));
     return {
       items,
       offset,
