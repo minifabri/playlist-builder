@@ -6,6 +6,7 @@ import {
   clampEnergy,
   clampTime,
   energyLabel,
+  ENERGY_ZONES,
   MIN_POINT_GAP_SEC,
   type ClassPhase,
   type EnergyCurve,
@@ -23,9 +24,12 @@ type Props = {
 
 const VIEW_W = 1000;
 const VIEW_H = 340;
-const MARGIN = { top: 20, right: 24, bottom: 36, left: 44 };
+const MARGIN = { top: 20, right: 24, bottom: 36, left: 90 };
 const INNER_W = VIEW_W - MARGIN.left - MARGIN.right;
 const INNER_H = VIEW_H - MARGIN.top - MARGIN.bottom;
+
+const ENERGY_ZONE_MIN_OPACITY = 0.03;
+const ENERGY_ZONE_MAX_OPACITY = 0.18;
 
 const KEYBOARD_TIME_STEP_SEC = 5;
 const KEYBOARD_ENERGY_STEP = 2;
@@ -224,6 +228,36 @@ export function EnergyCurveEditor({
         role="img"
         aria-label={`Energy curve over ${Math.round(curve.durationSec / 60)} minutes`}
       >
+        {/* Persistent qualitative energy-zone bands (Still/Grounded/Flowing/Driving/Peak) */}
+        {ENERGY_ZONES.map((zone, index) => {
+          const yTop = yScale(zone.max);
+          const yBottom = yScale(zone.min);
+          const bandOpacity =
+            ENERGY_ZONE_MIN_OPACITY +
+            (index / (ENERGY_ZONES.length - 1)) *
+              (ENERGY_ZONE_MAX_OPACITY - ENERGY_ZONE_MIN_OPACITY);
+          return (
+            <g key={zone.label}>
+              <rect
+                x={MARGIN.left}
+                y={yTop}
+                width={INNER_W}
+                height={yBottom - yTop}
+                className="fill-primary"
+                style={{ fillOpacity: bandOpacity }}
+              />
+              <text
+                x={MARGIN.left - 12}
+                y={(yTop + yBottom) / 2 + 4}
+                textAnchor="end"
+                className="fill-text-muted text-[11px]"
+              >
+                {zone.label}
+              </text>
+            </g>
+          );
+        })}
+
         {/* Phase bands */}
         {phases.map((phase) => (
           <g key={phase.id}>
@@ -311,7 +345,7 @@ export function EnergyCurveEditor({
               transform={`translate(${xScale(point.timeSec)}, ${yScale(point.energy)})`}
               tabIndex={0}
               role="slider"
-              aria-label={`Energy point at ${Math.round(point.timeSec / 60)} minutes, energy ${Math.round(point.energy)}${point.estimated ? " — estimated" : ""}`}
+              aria-label={`Energy point at ${Math.round(point.timeSec / 60)} minutes, energy ${Math.round(point.energy)} (${energyLabel(point.energy)})${point.estimated ? " — estimated" : ""}`}
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={Math.round(point.energy)}
