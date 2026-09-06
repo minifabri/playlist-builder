@@ -41,6 +41,14 @@ export const DEFAULT_MUSIC_INTENT: MusicIntent = {
   moodTags: [],
 };
 
+/**
+ * Where a session's curve/draft originally came from
+ * (05_PLAYLIST_RESHAPE.md — "Data model additions"). "preset"/"template"
+ * cover the existing create flows; "import" is the reverse flow — an
+ * existing Spotify playlist's own tracks seed the curve and draft.
+ */
+export type SessionSourceType = "preset" | "template" | "import";
+
 /** Local, mock-repository representation of a Class Session Draft. */
 export type ClassSession = {
   id: string;
@@ -51,8 +59,39 @@ export type ClassSession = {
   curve: EnergyCurve;
   phases: ClassPhase[];
   musicIntent: MusicIntent;
+  sourceType: SessionSourceType;
+  /** Present when sourceType === "import" — the PlaylistImport this session was seeded from. */
+  importId?: string;
   createdAt: string;
   updatedAt: string;
 };
 
 export const DURATION_PRESETS_MIN = [45, 60, 70, 75, 90] as const;
+
+/**
+ * A snapshot of an imported Spotify playlist's own tracks, taken at import
+ * time (05_PLAYLIST_RESHAPE.md — "Data model additions"). Kept alongside
+ * the ClassSession it seeded so the origin tag ("from {playlist name}") and
+ * re-import context survive independently of later edits to the draft.
+ */
+export type PlaylistImportOwnership = "own" | "collaborative" | "foreign";
+
+export type PlaylistImportTrackSnapshot = {
+  spotifyTrackId: string;
+  uri: string;
+  title: string;
+  artist: string;
+  position: number;
+  durationMs: number;
+};
+
+export type PlaylistImport = {
+  id: string;
+  sourceSpotifyPlaylistId: string;
+  sourceOwnerSpotifyUserId?: string;
+  ownership: PlaylistImportOwnership;
+  originalName: string;
+  originalDescription?: string;
+  trackSnapshot: PlaylistImportTrackSnapshot[];
+  importedAt: string;
+};

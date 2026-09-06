@@ -29,6 +29,7 @@ export function createSessionFromPreset(
     curve: applyCurveToDuration(preset.normalizedPoints, durationSec),
     phases: applyPhasesToDuration(preset.normalizedPhases, durationSec),
     musicIntent: { ...DEFAULT_MUSIC_INTENT },
+    sourceType: "preset",
     createdAt: now,
     updatedAt: now,
   };

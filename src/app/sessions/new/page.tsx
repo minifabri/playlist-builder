@@ -123,10 +123,16 @@ export default function NewSessionPage() {
           />
         </div>
 
-        <div className="mt-10">
+        <div className="mt-10 flex flex-wrap items-center gap-4">
           <Button onClick={handleSubmit} disabled={effectiveDurationMin <= 0}>
             Shape the class
           </Button>
+          <Link
+            href="/sessions/new/import"
+            className="text-sm text-text-muted underline hover:text-text"
+          >
+            Or import an existing Spotify playlist →
+          </Link>
         </div>
       </main>
     </div>
