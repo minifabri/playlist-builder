@@ -51,6 +51,29 @@ export type SpotifyPlaylist = {
   url: string;
 };
 
+/** A row in the current user's own playlist list — the "Import a playlist"
+ * picker (05_PLAYLIST_RESHAPE.md — "Entry point / IA"). */
+export type SpotifyPlaylistSummary = {
+  id: string;
+  name: string;
+  ownerId: string;
+  trackCount: number;
+  imageUrl: string | null;
+};
+
+/** Metadata for one playlist being imported, resolved separately from its
+ * track items so ownership/ "readable at all" can be checked before
+ * paging through items (05_PLAYLIST_RESHAPE.md — "Spotify integration
+ * requirements"). */
+export type SpotifyPlaylistDetails = {
+  id: string;
+  name: string;
+  description: string | null;
+  ownerId: string;
+  collaborative: boolean;
+  trackCount: number;
+};
+
 /**
  * Normalized error shape for Spotify integration failures
  * (07_ARCHITECTURE.md — "Error handling"). Callers should branch on `code`,

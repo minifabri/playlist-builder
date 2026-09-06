@@ -213,7 +213,9 @@ export function TrackRail({
 
   function rateTrackEnergy(index: number, label: string) {
     const next = order.map((entry, i) =>
-      i === index ? { ...entry, energyEstimate: energyLabelMidpoint(label) } : entry,
+      i === index
+        ? { ...entry, energyEstimate: energyLabelMidpoint(label), estimated: false }
+        : entry,
     );
     onChange(next);
   }
@@ -477,6 +479,14 @@ export function TrackRail({
                         Spotify
                       </span>
                     )}
+                    {track.origin && (
+                      <span
+                        className="ml-1.5 rounded-full bg-surface-subtle px-1.5 py-0.5 text-[9px] font-medium text-text-muted align-middle"
+                        title={`Kept from the imported playlist "${track.origin.playlistName}" — reorder, replace, or remove it like any other track.`}
+                      >
+                        from {track.origin.playlistName}
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-text-muted">{track.artist}</div>
                 </div>
@@ -496,23 +506,33 @@ export function TrackRail({
                       </span>
                     )}
                   </div>
-                  <select
-                    value={trackLabel}
-                    onChange={(e) => rateTrackEnergy(index, e.target.value)}
-                    aria-label={`Your energy rating for ${track.title}`}
-                    title={
-                      track.source === "spotify"
-                        ? "Spotify doesn't tell us how energetic a track feels (that data isn't available to new apps) — rate it yourself so the match check and \"Fit to curve\" can use it."
-                        : "Adjust this sample track's energy rating."
-                    }
-                    className="mt-1 h-6 rounded border border-border bg-surface px-1 text-[10px] text-text"
-                  >
-                    {ENERGY_LABEL_ORDER.map((label) => (
-                      <option key={label} value={label}>
-                        rated: {label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="mt-1 flex items-center gap-1">
+                    <select
+                      value={trackLabel}
+                      onChange={(e) => rateTrackEnergy(index, e.target.value)}
+                      aria-label={`Your energy rating for ${track.title}`}
+                      title={
+                        track.source === "spotify"
+                          ? "Spotify doesn't tell us how energetic a track feels (that data isn't available to new apps) — rate it yourself so the match check and \"Fit to curve\" can use it."
+                          : "Adjust this sample track's energy rating."
+                      }
+                      className="h-6 rounded border border-border bg-surface px-1 text-[10px] text-text"
+                    >
+                      {ENERGY_LABEL_ORDER.map((label) => (
+                        <option key={label} value={label}>
+                          rated: {label}
+                        </option>
+                      ))}
+                    </select>
+                    {track.estimated && (
+                      <span
+                        className="text-[9px] text-text-muted"
+                        title="Estimated when this playlist was imported — not yet rated by you."
+                      >
+                        (estimated)
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-1">
                   {track.source === "spotify" && (
