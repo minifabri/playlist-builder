@@ -509,6 +509,25 @@ export default function SessionEditorPage({
     );
   }
 
+  function deleteSession() {
+    if (!session) return;
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(`Delete "${session.title}"? This can't be undone.`)
+    ) {
+      return;
+    }
+    localClassSessionRepository.remove(id);
+    try {
+      window.localStorage.removeItem(`ima-yoga-tracks-${id}`);
+      window.localStorage.removeItem(`ima-yoga-genre-prefs-${id}`);
+      window.localStorage.removeItem(`ima-yoga-track-filters-${id}`);
+    } catch {
+      // ignore
+    }
+    router.push("/");
+  }
+
   function resetPlaylist() {
     if (order.length === 0) return;
     if (
@@ -632,6 +651,14 @@ export default function SessionEditorPage({
           <span className="text-xs text-text-muted">
             {savedState === "saving" ? "Saving…" : "Saved"}
           </span>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={deleteSession}
+            title="Delete this session and its playlist. This can't be undone."
+          >
+            Delete
+          </Button>
           <Button
             variant="secondary"
             size="sm"
