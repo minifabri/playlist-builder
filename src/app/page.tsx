@@ -18,6 +18,12 @@ export default function Home() {
     setRecent(localClassSessionRepository.list().slice(0, 6));
   }, []);
 
+  function deleteSession(id: string, title: string) {
+    if (!window.confirm(`Delete "${title}"? This can't be undone.`)) return;
+    localClassSessionRepository.remove(id);
+    setRecent((prev) => prev.filter((s) => s.id !== id));
+  }
+
   return (
     <div className="flex flex-1 flex-col">
       <header className="flex items-center justify-between px-6 py-5 sm:px-10">
@@ -52,17 +58,26 @@ export default function Home() {
           ) : (
             <ul className="mt-4 grid gap-3 sm:grid-cols-2">
               {recent.map((session) => (
-                <li key={session.id}>
-                  <Link
-                    href={`/sessions/${session.id}`}
-                    className="block rounded-[var(--radius-card)] border border-border bg-surface p-4 transition-colors hover:bg-surface-subtle"
-                  >
+                <li
+                  key={session.id}
+                  className="group relative rounded-[var(--radius-card)] border border-border bg-surface transition-colors hover:bg-surface-subtle"
+                >
+                  <Link href={`/sessions/${session.id}`} className="block p-4 pr-12">
                     <div className="font-medium text-text">{session.title}</div>
                     <div className="mt-1 text-xs text-text-muted">
                       {CLASS_TYPE_PRESETS[session.classType].label} ·{" "}
                       {Math.round(session.durationSec / 60)} min · {session.status}
                     </div>
                   </Link>
+                  <button
+                    type="button"
+                    onClick={() => deleteSession(session.id, session.title)}
+                    aria-label={`Delete "${session.title}"`}
+                    title="Delete playlist"
+                    className="absolute right-3 top-3 rounded-[var(--radius-control)] p-1.5 text-text-muted opacity-0 transition-opacity hover:bg-danger/10 hover:text-danger group-hover:opacity-100 focus-visible:opacity-100"
+                  >
+                    ✕
+                  </button>
                 </li>
               ))}
             </ul>
